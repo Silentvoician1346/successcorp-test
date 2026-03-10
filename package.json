@@ -1,0 +1,12 @@
+{
+  "name": "successcorp-test",
+  "private": true,
+  "scripts": {
+    "dev:fe": "pnpm --prefix fe run dev",
+    "dev:be": "pnpm --prefix be run start:dev",
+    "dev": "concurrently \"pnpm run dev:fe\" \"pnpm run dev:be\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
