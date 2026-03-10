@@ -1,8 +1,123 @@
 generator client {
-    provider = "prisma-client-js"
+  provider = "prisma-client-js"
 }
 
 datasource db {
-    provider = "postgresql"
-    url      = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+}
+
+enum WmsStatus {
+  READY_TO_PICK
+  PICKING
+  PACKED
+  SHIPPED
+}
+
+enum MarketplaceType {
+  SHOPEE
+  LAZADA
+  MOCK
+}
+
+enum WebhookEventType {
+  ORDER_STATUS
+  SHIPPING_STATUS
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  role         UserRole @default(OPERATOR)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model MarketplaceConnection {
+  id                    String          @id @default(uuid())
+  marketplace           MarketplaceType
+  shopId                String
+  shopName              String?
+  accessToken           String?
+  refreshToken          String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  tokenType             String?
+  scope                 String?
+  isActive              Boolean         @default(true)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  orders Order[]
+
+  @@unique([marketplace, shopId])
+  @@index([isActive])
+}
+
+model Order {
+  id                      String          @id @default(uuid())
+  orderSn                 String
+  shopId                  String
+  marketplace             MarketplaceType
+  marketplaceConnectionId String?
+  marketplaceStatus       String
+  shippingStatus          String?
+  wmsStatus               WmsStatus       @default(READY_TO_PICK)
+  trackingNumber          String?
+  totalAmount             Decimal         @db.Decimal(12, 2)
+  rawMarketplacePayload   Json
+  marketplaceCreatedAt    DateTime?
+  syncedAt                DateTime?
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+
+  marketplaceConnection MarketplaceConnection? @relation(fields: [marketplaceConnectionId], references: [id], onDelete: SetNull)
+  items                 OrderItem[]
+  webhookEvents         WebhookEvent[]
+
+  @@unique([marketplace, shopId, orderSn])
+  @@index([wmsStatus, updatedAt])
+  @@index([marketplaceStatus])
+  @@index([shippingStatus])
+  @@index([shopId])
+  @@index([updatedAt])
+}
+
+model OrderItem {
+  id        String   @id @default(uuid())
+  orderId   String
+  sku       String
+  quantity  Int
+  price     Decimal  @db.Decimal(12, 2)
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([sku])
+}
+
+model WebhookEvent {
+  id          String           @id @default(uuid())
+  eventType   WebhookEventType
+  eventKey    String           @unique
+  orderId     String?
+  orderSn     String?
+  shopId      String?
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime         @default(now())
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([eventType, createdAt])
+  @@index([orderSn, shopId])
 }
