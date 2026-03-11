@@ -6,7 +6,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { MarketplaceConnection, Order, OrderItem, WmsStatus } from '@prisma/client';
+import {
+  MarketplaceConnection,
+  MarketplaceType,
+  Order,
+  OrderItem,
+  Prisma,
+  WmsStatus,
+} from '@prisma/client';
 import axios from 'axios';
 import { createHmac } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -21,6 +28,41 @@ type MarketplaceShipApiResponse = {
     tracking_no?: string;
     tracking_number?: string;
   };
+};
+
+type MarketplaceOrderListApiResponse = {
+  message?: string;
+  data?: unknown;
+};
+
+type MarketplaceTokenConnection = Pick<
+  MarketplaceConnection,
+  | 'id'
+  | 'marketplace'
+  | 'shopId'
+  | 'isActive'
+  | 'accessToken'
+  | 'refreshToken'
+  | 'accessTokenExpiresAt'
+  | 'refreshTokenExpiresAt'
+>;
+
+type SyncOrderItem = {
+  sku: string;
+  quantity: number;
+  price: number;
+};
+
+type SyncOrderRecord = {
+  orderSn: string;
+  shopId: string;
+  marketplaceStatus: string;
+  shippingStatus: string | null;
+  trackingNumber: string | null;
+  totalAmount: number;
+  marketplaceCreatedAt: Date | null;
+  items: SyncOrderItem[];
+  rawMarketplacePayload: Prisma.JsonObject;
 };
 
 @Injectable()
@@ -114,6 +156,339 @@ export class OrdersService {
       shipping_status: updatedOrder.shippingStatus,
       tracking_number: updatedOrder.trackingNumber,
     };
+  }
+
+  async syncOrdersFromMarketplace() {
+    const baseUrl = this.getMarketplaceBaseUrl();
+    const endpoint = `${baseUrl}/order/list`;
+
+    const {
+      accessToken,
+      envAccessToken,
+      connection,
+    } = await this.resolveMarketplaceAuthContext(baseUrl);
+    const marketplaceOrders = await this.callMarketplaceOrderList(
+      endpoint,
+      baseUrl,
+      accessToken,
+      envAccessToken,
+      connection,
+    );
+
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    for (const payload of marketplaceOrders) {
+      const normalized = this.normalizeMarketplaceOrderRecord(payload);
+      if (!normalized) {
+        skipped += 1;
+        continue;
+      }
+
+      const activeConnection = await this.prisma.marketplaceConnection.findFirst({
+        where: {
+          shopId: normalized.shopId,
+          isActive: true,
+        },
+        orderBy: { updatedAt: 'desc' },
+        select: {
+          id: true,
+          marketplace: true,
+          shopId: true,
+        },
+      });
+
+      const preferredConnection =
+        connection && connection.shopId === normalized.shopId ? connection : null;
+      const marketplace =
+        activeConnection?.marketplace ??
+        preferredConnection?.marketplace ??
+        this.inferMarketplaceType(normalized.shopId);
+      const marketplaceConnectionId =
+        activeConnection?.id ?? preferredConnection?.id ?? null;
+
+      const existingOrder = await this.prisma.order.findUnique({
+        where: {
+          marketplace_shopId_orderSn: {
+            marketplace,
+            shopId: normalized.shopId,
+            orderSn: normalized.orderSn,
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      const orderData = {
+        marketplaceConnectionId,
+        marketplaceStatus: normalized.marketplaceStatus,
+        shippingStatus: normalized.shippingStatus,
+        trackingNumber: normalized.trackingNumber,
+        totalAmount: normalized.totalAmount,
+        rawMarketplacePayload: normalized.rawMarketplacePayload,
+        marketplaceCreatedAt: normalized.marketplaceCreatedAt ?? undefined,
+        syncedAt: new Date(),
+      };
+
+      const order = existingOrder
+        ? await this.prisma.order.update({
+            where: { id: existingOrder.id },
+            data: orderData,
+          })
+        : await this.prisma.order.create({
+            data: {
+              orderSn: normalized.orderSn,
+              shopId: normalized.shopId,
+              marketplace,
+              ...orderData,
+            },
+          });
+
+      await this.prisma.orderItem.deleteMany({
+        where: { orderId: order.id },
+      });
+
+      if (normalized.items.length > 0) {
+        await this.prisma.orderItem.createMany({
+          data: normalized.items.map((item) => ({
+            orderId: order.id,
+            sku: item.sku,
+            quantity: item.quantity,
+            price: item.price,
+          })),
+        });
+      }
+
+      if (existingOrder) {
+        updated += 1;
+      } else {
+        created += 1;
+      }
+    }
+
+    return {
+      message: 'Orders synchronized from marketplace',
+      summary: {
+        fetched: marketplaceOrders.length,
+        created,
+        updated,
+        skipped,
+      },
+    };
+  }
+
+  private async resolveMarketplaceAuthContext(baseUrl: string) {
+    const envAccessToken =
+      this.configService.get<string>('MARKETPLACE_ACCESS_TOKEN')?.trim() ?? '';
+    if (envAccessToken) {
+      return {
+        accessToken: envAccessToken,
+        envAccessToken,
+        connection: null,
+      };
+    }
+
+    const connection = await this.prisma.marketplaceConnection.findFirst({
+      where: { isActive: true },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        marketplace: true,
+        shopId: true,
+        isActive: true,
+        accessToken: true,
+        refreshToken: true,
+        accessTokenExpiresAt: true,
+        refreshTokenExpiresAt: true,
+      },
+    });
+
+    if (!connection) {
+      throw new InternalServerErrorException(
+        'Marketplace connection not found. Configure MARKETPLACE_ACCESS_TOKEN or connect a shop first.',
+      );
+    }
+
+    const accessToken = await this.getMarketplaceAccessToken(connection, baseUrl);
+    return {
+      accessToken,
+      envAccessToken,
+      connection,
+    };
+  }
+
+  private async callMarketplaceOrderList(
+    endpoint: string,
+    baseUrl: string,
+    accessToken: string,
+    envAccessToken: string,
+    connection: MarketplaceTokenConnection | null,
+  ) {
+    try {
+      return await this.requestMarketplaceOrderList(endpoint, accessToken);
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        if (status === 401 && !envAccessToken && connection?.refreshToken) {
+          const refreshedToken = await this.refreshMarketplaceAccessToken(
+            connection,
+            baseUrl,
+          );
+          return this.requestMarketplaceOrderList(endpoint, refreshedToken);
+        }
+      }
+
+      throw this.toMarketplaceError(error, endpoint, 'order list');
+    }
+  }
+
+  private async requestMarketplaceOrderList(
+    endpoint: string,
+    accessToken: string,
+  ) {
+    const response = await axios.get<MarketplaceOrderListApiResponse>(endpoint, {
+      headers: this.buildMarketplaceHeaders(accessToken),
+      timeout: 10000,
+    });
+
+    if (!Array.isArray(response.data?.data)) {
+      throw new BadGatewayException(
+        'Marketplace order list response missing data array',
+      );
+    }
+
+    return response.data.data;
+  }
+
+  private normalizeMarketplaceOrderRecord(payload: unknown): SyncOrderRecord | null {
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+
+    const record = payload as Record<string, unknown>;
+    const orderSn = this.normalizeRequiredString(record.order_sn);
+    const shopId = this.normalizeRequiredString(record.shop_id);
+    if (!orderSn || !shopId) {
+      return null;
+    }
+
+    const marketplaceStatus =
+      this.normalizeRequiredString(record.status) ?? 'unknown';
+    const shippingStatus = this.normalizeOptionalString(record.shipping_status);
+    const trackingNumber =
+      this.normalizeOptionalString(record.tracking_no) ??
+      this.normalizeOptionalString(record.tracking_number);
+    const totalAmount = this.normalizeNumber(record.total_amount);
+    if (totalAmount === null) {
+      return null;
+    }
+    const marketplaceCreatedAt = this.normalizeDate(record.created_at);
+    const items = this.normalizeMarketplaceOrderItems(record.items);
+
+    return {
+      orderSn,
+      shopId,
+      marketplaceStatus,
+      shippingStatus,
+      trackingNumber,
+      totalAmount,
+      marketplaceCreatedAt,
+      items,
+      rawMarketplacePayload: payload as Prisma.JsonObject,
+    };
+  }
+
+  private normalizeMarketplaceOrderItems(itemsPayload: unknown): SyncOrderItem[] {
+    if (!Array.isArray(itemsPayload)) {
+      return [];
+    }
+
+    const result: SyncOrderItem[] = [];
+    for (const itemPayload of itemsPayload) {
+      if (!itemPayload || typeof itemPayload !== 'object') {
+        continue;
+      }
+
+      const item = itemPayload as Record<string, unknown>;
+      const sku = this.normalizeRequiredString(item.sku);
+      const quantityRaw = this.normalizeNumber(item.quantity);
+      const priceRaw = this.normalizeNumber(item.price);
+      if (!sku || quantityRaw === null || priceRaw === null) {
+        continue;
+      }
+
+      const quantity = Math.floor(quantityRaw);
+      if (quantity <= 0) {
+        continue;
+      }
+
+      result.push({
+        sku,
+        quantity,
+        price: priceRaw,
+      });
+    }
+
+    return result;
+  }
+
+  private normalizeRequiredString(value: unknown) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized || null;
+  }
+
+  private normalizeOptionalString(value: unknown) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized || null;
+  }
+
+  private normalizeNumber(value: unknown) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  private normalizeDate(value: unknown) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+
+    return date;
+  }
+
+  private inferMarketplaceType(shopId: string) {
+    const normalizedShopId = shopId.toLowerCase();
+    if (normalizedShopId.includes('shopee')) {
+      return MarketplaceType.SHOPEE;
+    }
+    if (normalizedShopId.includes('lazada')) {
+      return MarketplaceType.LAZADA;
+    }
+    return MarketplaceType.MOCK;
   }
 
   private async transitionWmsStatus(

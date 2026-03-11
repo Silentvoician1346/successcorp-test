@@ -18,6 +18,11 @@ export class OrdersController {
     return this.ordersService.getOrderDetail(orderSn);
   }
 
+  @Post('sync')
+  syncOrders() {
+    return this.ordersService.syncOrdersFromMarketplace();
+  }
+
   @Post(':order_sn/pick')
   pickOrder(@Param('order_sn') orderSn: string) {
     return this.ordersService.pickOrder(orderSn);

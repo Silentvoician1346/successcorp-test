@@ -10,7 +10,7 @@ const prisma = new PrismaClient();
 
 async function main() {
   const email = process.env.SEED_ADMIN_EMAIL || 'admin@wms.local';
-  const password = process.env.SEED_ADMIN_PASSWORD || 'admin123456';
+  const password = process.env.SEED_ADMIN_PASSWORD || 'password';
   const passwordHash = await bcrypt.hash(password, 10);
 
   const user = await prisma.user.upsert({
