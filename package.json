@@ -2,8 +2,9 @@
   "name": "successcorp-test",
   "private": true,
   "scripts": {
-    "dev:fe": "pnpm --prefix fe-wsm run dev",
-    "dev:be": "pnpm --prefix be-wsm run start:dev",
+    "dev:fe": "pnpm --filter fe-wsm run dev",
+    "dev:be": "pnpm --filter be-wsm run start:dev",
+    "db:migrate": "pnpm --filter be-wsm run prisma:generate",
     "dev": "concurrently \"pnpm run dev:fe\" \"pnpm run dev:be\""
   },
   "devDependencies": {
