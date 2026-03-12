@@ -2,9 +2,9 @@ FULL-STACK DEVELOPER TECHNICAL TEST
 Simple WMS (Warehouse Management System) with Marketplace Integration
 
 Candidate Information
-Name: ******************\_\_******************
-Email: ******************\_******************
-Submission Date: ************\_\_\_\_************
+Name: ********\*\*********\_\_********\*\*********
+Email: ********\*\*********\_********\*\*********
+Submission Date: ****\*\*\*\*****\_\_\_\_****\*\*\*\*****
 
 1. Background
    You are tasked with building a simple Warehouse Management System (WMS) that integrates with a Marketplace Mock API provided by us.

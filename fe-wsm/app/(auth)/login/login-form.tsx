@@ -338,34 +338,6 @@ export default function LoginForm() {
                 </p>
               ) : null}
 
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                <Button
-                  type="button"
-                  onClick={() => toast.success("Login successful.", getToastTarget())}
-                  className={`${poppins.className} h-auto rounded-lg bg-(--success) px-3 py-2 text-[13px] leading-5 font-semibold text-white hover:bg-(--success)/90`}
-                >
-                  Success Toast
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() =>
-                    toast.warning("Your session is about to expire.", getToastTarget())
-                  }
-                  className={`${poppins.className} h-auto rounded-lg bg-amber-500 px-3 py-2 text-[13px] leading-5 font-semibold text-white hover:bg-amber-500/90`}
-                >
-                  Warning Toast
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() =>
-                    toast.error("Unable to sign in. Please try again.", getToastTarget())
-                  }
-                  className={`${poppins.className} h-auto rounded-lg bg-(--danger) py-2 text-[13px] leading-5 font-semibold text-white hover:bg-(--danger)/90`}
-                >
-                  Error Toast
-                </Button>
-              </div>
-
               <div className="flex items-center gap-3 py-1">
                 <Separator className="flex-1 bg-border" />
                 <span

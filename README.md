@@ -43,6 +43,13 @@ pnpm run db:up
 pnpm run db:ps
 ```
 
+If you previously ran this project and want a clean DB:
+
+```bash
+docker compose -f be-wsm/docker-compose.yml down -v --remove-orphans
+pnpm run db:up
+```
+
 Default DB values from `be-wsm/docker-compose.yml`:
 
 - host: `localhost`
