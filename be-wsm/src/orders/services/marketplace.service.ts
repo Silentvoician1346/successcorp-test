@@ -146,22 +146,46 @@ export class MarketplaceService {
 
   // Resolves active marketplace connection and returns a usable access token.
   private async resolveMarketplaceAuthContext(baseUrl: string) {
-    let connection = await this.prisma.marketplaceConnection.findFirst({
-      where: { isActive: true },
-      orderBy: { updatedAt: 'desc' },
-      select: {
-        id: true,
-        marketplace: true,
-        shopId: true,
-        isActive: true,
-        accessToken: true,
-        refreshToken: true,
-        accessTokenExpiresAt: true,
-        refreshTokenExpiresAt: true,
-        tokenType: true,
-        scope: true,
-      },
-    });
+    const preferredShopId =
+      this.configService.get<string>('MARKETPLACE_SHOP_ID')?.trim() || null;
+
+    let connection = preferredShopId
+      ? await this.prisma.marketplaceConnection.findFirst({
+          where: { isActive: true, shopId: preferredShopId },
+          orderBy: { updatedAt: 'desc' },
+          select: {
+            id: true,
+            marketplace: true,
+            shopId: true,
+            isActive: true,
+            accessToken: true,
+            refreshToken: true,
+            accessTokenExpiresAt: true,
+            refreshTokenExpiresAt: true,
+            tokenType: true,
+            scope: true,
+          },
+        })
+      : null;
+
+    if (!connection) {
+      connection = await this.prisma.marketplaceConnection.findFirst({
+        where: { isActive: true },
+        orderBy: { updatedAt: 'desc' },
+        select: {
+          id: true,
+          marketplace: true,
+          shopId: true,
+          isActive: true,
+          accessToken: true,
+          refreshToken: true,
+          accessTokenExpiresAt: true,
+          refreshTokenExpiresAt: true,
+          tokenType: true,
+          scope: true,
+        },
+      });
+    }
 
     if (!connection) {
       connection = await this.bootstrapMarketplaceConnection(baseUrl);
