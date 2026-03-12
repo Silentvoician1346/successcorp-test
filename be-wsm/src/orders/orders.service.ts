@@ -36,6 +36,11 @@ type MarketplaceOrderListApiResponse = {
   data?: unknown;
 };
 
+type MarketplaceOrderDetailApiResponse = {
+  message?: string;
+  data?: unknown;
+};
+
 type MarketplaceAuthorizeApiResponse = {
   message?: string;
   data?: {
@@ -262,85 +267,11 @@ export class OrdersService {
           continue;
         }
 
-        const activeConnection =
-          await this.prisma.marketplaceConnection.findFirst({
-            where: {
-              shopId: normalized.shopId,
-              isActive: true,
-            },
-            orderBy: { updatedAt: 'desc' },
-            select: {
-              id: true,
-              marketplace: true,
-              shopId: true,
-            },
-          });
-
-        const preferredConnection =
-          connection && connection.shopId === normalized.shopId
-            ? connection
-            : null;
-        const marketplace =
-          activeConnection?.marketplace ??
-          preferredConnection?.marketplace ??
-          this.inferMarketplaceType(normalized.shopId);
-        const marketplaceConnectionId =
-          activeConnection?.id ?? preferredConnection?.id ?? null;
-
-        const existingOrder = await this.prisma.order.findUnique({
-          where: {
-            marketplace_shopId_orderSn: {
-              marketplace,
-              shopId: normalized.shopId,
-              orderSn: normalized.orderSn,
-            },
-          },
-          select: {
-            id: true,
-          },
-        });
-
-        const orderData = {
-          marketplaceConnectionId,
-          marketplaceStatus: normalized.marketplaceStatus,
-          shippingStatus: normalized.shippingStatus,
-          trackingNumber: normalized.trackingNumber,
-          totalAmount: normalized.totalAmount,
-          rawMarketplacePayload: normalized.rawMarketplacePayload,
-          marketplaceCreatedAt: normalized.marketplaceCreatedAt ?? undefined,
-          syncedAt: new Date(),
-        };
-
-        const order = existingOrder
-          ? await this.prisma.order.update({
-              where: { id: existingOrder.id },
-              data: orderData,
-            })
-          : await this.prisma.order.create({
-              data: {
-                orderSn: normalized.orderSn,
-                shopId: normalized.shopId,
-                marketplace,
-                ...orderData,
-              },
-            });
-
-        await this.prisma.orderItem.deleteMany({
-          where: { orderId: order.id },
-        });
-
-        if (normalized.items.length > 0) {
-          await this.prisma.orderItem.createMany({
-            data: normalized.items.map((item) => ({
-              orderId: order.id,
-              sku: item.sku,
-              quantity: item.quantity,
-              price: item.price,
-            })),
-          });
-        }
-
-        if (existingOrder) {
+        const syncResult = await this.upsertMarketplaceOrderRecord(
+          normalized,
+          connection,
+        );
+        if (syncResult === 'updated') {
           updated += 1;
           this.logger.log(`Updated order ${normalized.orderSn}`);
         } else {
@@ -368,6 +299,52 @@ export class OrdersService {
       this.logger.error(`Order sync failed: ${message}`, stack);
       throw error;
     }
+  }
+
+  async syncOrderFromMarketplace(orderSn: string) {
+    const normalizedOrderSn = orderSn.trim();
+    if (!normalizedOrderSn) {
+      throw new BadRequestException('order_sn is required');
+    }
+
+    this.logger.log(
+      `Starting single order sync from marketplace (order_sn=${normalizedOrderSn})`,
+    );
+
+    const baseUrl = this.getMarketplaceBaseUrl();
+    const endpoint =
+      `${baseUrl}/order/detail?order_sn=${encodeURIComponent(normalizedOrderSn)}`;
+
+    const { accessToken, connection } =
+      await this.resolveMarketplaceAuthContext(baseUrl);
+    const payload = await this.callMarketplaceOrderDetail(
+      endpoint,
+      baseUrl,
+      accessToken,
+      connection,
+    );
+    const normalized = this.normalizeMarketplaceOrderRecord(payload);
+    if (!normalized) {
+      throw new BadGatewayException(
+        'Marketplace order detail response has invalid payload',
+      );
+    }
+
+    const syncResult = await this.upsertMarketplaceOrderRecord(
+      normalized,
+      connection,
+    );
+    this.logger.log(
+      `Single order sync completed (order_sn=${normalized.orderSn}, result=${syncResult})`,
+    );
+
+    return {
+      message: 'Order synchronized from marketplace',
+      data: {
+        order_sn: normalized.orderSn,
+        result: syncResult,
+      },
+    };
   }
 
   private async resolveMarketplaceAuthContext(baseUrl: string) {
@@ -454,6 +431,58 @@ export class OrdersService {
     }
   }
 
+  private async callMarketplaceOrderDetail(
+    endpoint: string,
+    baseUrl: string,
+    accessToken: string,
+    connection: MarketplaceTokenConnection,
+  ) {
+    this.logger.log(`Calling marketplace endpoint: ${endpoint}`);
+    try {
+      return await this.requestMarketplaceOrderDetail(endpoint, accessToken);
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        if (status === 401) {
+          if (connection.refreshToken) {
+            this.logger.warn(
+              'Marketplace returned 401 for order detail, trying token refresh',
+            );
+            const refreshedToken = await this.refreshMarketplaceAccessToken(
+              connection,
+              baseUrl,
+            );
+            return this.requestMarketplaceOrderDetail(endpoint, refreshedToken);
+          }
+
+          this.logger.warn(
+            'Marketplace returned 401 for order detail and no refresh token available. Running OAuth bootstrap.',
+          );
+          const bootstrapped = await this.bootstrapMarketplaceConnection(
+            baseUrl,
+            {
+              shopId: connection.shopId,
+              marketplace: connection.marketplace,
+            },
+          );
+          const bootstrappedAccessToken =
+            bootstrapped.accessToken?.trim() ?? '';
+          if (!bootstrappedAccessToken) {
+            throw new InternalServerErrorException(
+              'Marketplace OAuth bootstrap did not return a usable access token',
+            );
+          }
+          return this.requestMarketplaceOrderDetail(
+            endpoint,
+            bootstrappedAccessToken,
+          );
+        }
+      }
+
+      throw this.toMarketplaceError(error, endpoint, 'order detail');
+    }
+  }
+
   private async requestMarketplaceOrderList(
     endpoint: string,
     accessToken: string,
@@ -472,6 +501,25 @@ export class OrdersService {
     this.logger.log(
       `Marketplace order list response OK (records=${response.data.data.length})`,
     );
+    return response.data.data;
+  }
+
+  private async requestMarketplaceOrderDetail(
+    endpoint: string,
+    accessToken: string,
+  ) {
+    const response = await axios.get<MarketplaceOrderDetailApiResponse>(endpoint, {
+      headers: this.buildMarketplaceHeaders(accessToken),
+      timeout: 10000,
+    });
+
+    if (!response.data?.data || typeof response.data.data !== 'object') {
+      throw new BadGatewayException(
+        'Marketplace order detail response missing data object',
+      );
+    }
+
+    this.logger.log('Marketplace order detail response OK');
     return response.data.data;
   }
 
@@ -715,6 +763,89 @@ export class OrdersService {
     }
 
     return result;
+  }
+
+  private async upsertMarketplaceOrderRecord(
+    normalized: SyncOrderRecord,
+    preferredConnection?: MarketplaceTokenConnection | null,
+  ) {
+    const activeConnection = await this.prisma.marketplaceConnection.findFirst({
+      where: {
+        shopId: normalized.shopId,
+        isActive: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        marketplace: true,
+        shopId: true,
+      },
+    });
+
+    const preferred =
+      preferredConnection && preferredConnection.shopId === normalized.shopId
+        ? preferredConnection
+        : null;
+    const marketplace =
+      activeConnection?.marketplace ??
+      preferred?.marketplace ??
+      this.inferMarketplaceType(normalized.shopId);
+    const marketplaceConnectionId = activeConnection?.id ?? preferred?.id ?? null;
+
+    const existingOrder = await this.prisma.order.findUnique({
+      where: {
+        marketplace_shopId_orderSn: {
+          marketplace,
+          shopId: normalized.shopId,
+          orderSn: normalized.orderSn,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    const orderData = {
+      marketplaceConnectionId,
+      marketplaceStatus: normalized.marketplaceStatus,
+      shippingStatus: normalized.shippingStatus,
+      trackingNumber: normalized.trackingNumber,
+      totalAmount: normalized.totalAmount,
+      rawMarketplacePayload: normalized.rawMarketplacePayload,
+      marketplaceCreatedAt: normalized.marketplaceCreatedAt ?? undefined,
+      syncedAt: new Date(),
+    };
+
+    const order = existingOrder
+      ? await this.prisma.order.update({
+          where: { id: existingOrder.id },
+          data: orderData,
+        })
+      : await this.prisma.order.create({
+          data: {
+            orderSn: normalized.orderSn,
+            shopId: normalized.shopId,
+            marketplace,
+            ...orderData,
+          },
+        });
+
+    await this.prisma.orderItem.deleteMany({
+      where: { orderId: order.id },
+    });
+
+    if (normalized.items.length > 0) {
+      await this.prisma.orderItem.createMany({
+        data: normalized.items.map((item) => ({
+          orderId: order.id,
+          sku: item.sku,
+          quantity: item.quantity,
+          price: item.price,
+        })),
+      });
+    }
+
+    return existingOrder ? 'updated' : 'created';
   }
 
   private normalizeRequiredString(value: unknown) {

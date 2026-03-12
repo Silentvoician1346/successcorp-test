@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Filter } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Filter, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 import {
   type ColumnDef,
   type PaginationState,
@@ -66,6 +67,22 @@ type WmsOrderDetail = {
 type WmsOrderDetailResponse = {
   message?: string | string[];
   order?: WmsOrderDetail | null;
+};
+
+type WmsAction = "pick" | "pack" | "ship";
+
+type WmsActionConfig = {
+  action: WmsAction;
+  label: string;
+  disabled: boolean;
+};
+
+type WmsActionPayload = {
+  message?: string | string[];
+};
+
+type WmsDetailSyncPayload = {
+  message?: string | string[];
 };
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
@@ -239,6 +256,46 @@ async function fetchOrderDetail(orderSn: string) {
   return payload.order;
 }
 
+async function postOrderAction(orderSn: string, action: WmsAction) {
+  const response = await fetch(`/api/orders/${encodeURIComponent(orderSn)}/${action}`, {
+    method: "POST",
+    cache: "no-store",
+  });
+
+  let payload: WmsActionPayload | null = null;
+  try {
+    payload = (await response.json()) as WmsActionPayload;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(resolveMessage(payload?.message, "Failed to update order status."));
+  }
+
+  return payload;
+}
+
+async function syncOrderDetail(orderSn: string) {
+  const response = await fetch(`/api/orders/${encodeURIComponent(orderSn)}/sync`, {
+    method: "POST",
+    cache: "no-store",
+  });
+
+  let payload: WmsDetailSyncPayload | null = null;
+  try {
+    payload = (await response.json()) as WmsDetailSyncPayload;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(resolveMessage(payload?.message, "Failed to sync order detail."));
+  }
+
+  return payload;
+}
+
 function formatDateTime(isoValue: string) {
   const date = new Date(isoValue);
   if (Number.isNaN(date.getTime())) return "-";
@@ -311,6 +368,45 @@ function toWmsStatusLabel(status: string | null) {
   return wmsStatusLabelMap[status] ?? status.replaceAll("_", " ");
 }
 
+function toActionLabel(action: WmsAction) {
+  if (action === "pick") return "Pickup";
+  if (action === "pack") return "Pack";
+  return "Ship";
+}
+
+function getWmsActionConfig(status: string | null): WmsActionConfig | null {
+  if (status === "READY_TO_PICK") {
+    return {
+      action: "pick",
+      label: "Pickup",
+      disabled: false,
+    };
+  }
+  if (status === "PICKING") {
+    return {
+      action: "pack",
+      label: "Pack",
+      disabled: false,
+    };
+  }
+  if (status === "PACKED") {
+    return {
+      action: "ship",
+      label: "Ship",
+      disabled: false,
+    };
+  }
+  if (status === "SHIPPED") {
+    return {
+      action: "ship",
+      label: "Shipped",
+      disabled: true,
+    };
+  }
+
+  return null;
+}
+
 function normalizeFilterSelection(values: string[]) {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort();
 }
@@ -376,7 +472,10 @@ function StatusFilterDropdown({ title, options, value, onSave }: StatusFilterDro
             {options.map((option) => {
               const checked = draftSet.has(option.value);
               return (
-                <label key={option.value} className="flex cursor-pointer items-center gap-2 text-xs">
+                <label
+                  key={option.value}
+                  className="flex cursor-pointer items-center gap-2 text-xs"
+                >
                   <Checkbox
                     checked={checked}
                     onCheckedChange={(checkedState) => {
@@ -397,12 +496,7 @@ function StatusFilterDropdown({ title, options, value, onSave }: StatusFilterDro
             })}
           </div>
           <div className="mt-3 flex items-center justify-end gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => setDraft([])}
-            >
+            <Button type="button" size="sm" variant="outline" onClick={() => setDraft([])}>
               Reset
             </Button>
             <Button
@@ -423,20 +517,19 @@ function StatusFilterDropdown({ title, options, value, onSave }: StatusFilterDro
 }
 
 export default function OrdersList() {
+  const queryClient = useQueryClient();
   const [selectedOrderSn, setSelectedOrderSn] = useState<string | null>(null);
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
     pageSize: 10,
   });
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: "updated_at", desc: true },
-  ]);
+  const [sorting, setSorting] = useState<SortingState>([{ id: "updated_at", desc: true }]);
   const [filters, setFilters] = useState<OrdersFilters>(DEFAULT_FILTERS);
+  const [isOrderDetailSyncCooldown, setIsOrderDetailSyncCooldown] = useState(false);
+  const orderDetailSyncCooldownTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const updatedAtOrder: "asc" | "desc" =
-    sorting[0]?.id === "updated_at" && sorting[0].desc === false
-      ? "asc"
-      : "desc";
+    sorting[0]?.id === "updated_at" && sorting[0].desc === false ? "asc" : "desc";
 
   const {
     data: ordersPage,
@@ -460,6 +553,51 @@ export default function OrdersList() {
     enabled: Boolean(selectedOrderSn),
   });
 
+  const { mutate: mutateOrderAction, isPending: isOrderActionPending } = useMutation({
+    mutationFn: ({ orderSn, action }: { orderSn: string; action: WmsAction }) =>
+      postOrderAction(orderSn, action),
+    onSuccess: (_payload, variables) => {
+      toast.success(`Order ${toActionLabel(variables.action)} success.`, {
+        position: "top-center",
+      });
+      void queryClient.invalidateQueries({ queryKey: ["orders"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["order-detail", variables.orderSn],
+      });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Failed to update order status.";
+      toast.error(message, {
+        position: "top-center",
+      });
+    },
+  });
+
+  const { mutate: mutateOrderDetailSync, isPending: isOrderDetailSyncPending } = useMutation({
+    mutationFn: (orderSn: string) => syncOrderDetail(orderSn),
+    onSuccess: (payload, orderSn) => {
+      toast.success(resolveMessage(payload?.message, "Order detail synchronized."), {
+        position: "top-center",
+      });
+      void queryClient.invalidateQueries({ queryKey: ["orders"] });
+      void queryClient.invalidateQueries({ queryKey: ["order-detail", orderSn] });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Failed to sync order detail.";
+      toast.error(message, {
+        position: "top-center",
+      });
+    },
+  });
+
+  useEffect(() => {
+    return () => {
+      if (orderDetailSyncCooldownTimeoutRef.current) {
+        clearTimeout(orderDetailSyncCooldownTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const handleSaveFilter = useCallback((key: FilterKey, nextValues: string[]) => {
     setFilters((current) => ({
       ...current,
@@ -473,7 +611,9 @@ export default function OrdersList() {
       {
         accessorKey: "order_sn",
         header: "Order SN",
-        cell: ({ row }) => <span className="font-medium text-foreground">{row.original.order_sn}</span>,
+        cell: ({ row }) => (
+          <span className="font-medium text-foreground">{row.original.order_sn}</span>
+        ),
       },
       {
         accessorKey: "marketplace_status",
@@ -552,11 +692,7 @@ export default function OrdersList() {
           >
             <span>Updated At</span>
             <span className="text-xs">
-              {column.getIsSorted() === "asc"
-                ? "↑"
-                : column.getIsSorted() === "desc"
-                  ? "↓"
-                  : "↕"}
+              {column.getIsSorted() === "asc" ? "↑" : column.getIsSorted() === "desc" ? "↓" : "↕"}
             </span>
           </button>
         ),
@@ -581,6 +717,7 @@ export default function OrdersList() {
     [filters.marketplace_status, filters.shipping_status, filters.wms_status, handleSaveFilter],
   );
 
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data: ordersPage?.orders ?? [],
     columns,
@@ -616,12 +753,11 @@ export default function OrdersList() {
     }
     const maxPageIndex = Math.max(0, totalPagesFromServer - 1);
     setPagination((current) =>
-      current.pageIndex > maxPageIndex
-        ? { ...current, pageIndex: maxPageIndex }
-        : current,
+      current.pageIndex > maxPageIndex ? { ...current, pageIndex: maxPageIndex } : current,
     );
   }, [ordersPage?.pagination.total_pages]);
 
+  const detailActionConfig = getWmsActionConfig(orderDetail?.wms_status ?? null);
   const orderItems = orderDetail?.items ?? [];
   const totalAmount = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const itemRows: Array<WmsOrderItem | null> =
@@ -647,7 +783,7 @@ export default function OrdersList() {
         ) : null}
 
         {!isLoading && !isError ? (
-          <div className="min-h-[400px] overflow-x-auto rounded-lg border border-border">
+          <div className="min-h-100 overflow-x-auto rounded-lg border border-border">
             <table className="min-w-full border-collapse text-left text-sm">
               <thead className="bg-muted/60 text-muted-foreground">
                 {table.getHeaderGroups().map((headerGroup) => (
@@ -745,21 +881,44 @@ export default function OrdersList() {
           onClick={() => setSelectedOrderSn(null)}
         >
           <div
-            className="w-[460px] max-w-[calc(100vw-2rem)] rounded-xl bg-background p-6 shadow-xl"
+            className="w-115 max-w-[calc(100vw-2rem)] rounded-xl bg-background p-6 shadow-xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-foreground">Detail</h2>
               <Button
                 type="button"
+                size="icon"
                 variant="outline"
-                onClick={() => setSelectedOrderSn(null)}
+                aria-label="Sync order detail"
+                onClick={() => {
+                  if (!selectedOrderSn || isOrderDetailSyncPending || isOrderDetailSyncCooldown) {
+                    return;
+                  }
+
+                  setIsOrderDetailSyncCooldown(true);
+                  if (orderDetailSyncCooldownTimeoutRef.current) {
+                    clearTimeout(orderDetailSyncCooldownTimeoutRef.current);
+                  }
+                  orderDetailSyncCooldownTimeoutRef.current = setTimeout(() => {
+                    setIsOrderDetailSyncCooldown(false);
+                    orderDetailSyncCooldownTimeoutRef.current = null;
+                  }, 1000);
+
+                  mutateOrderDetailSync(selectedOrderSn);
+                }}
+                disabled={!selectedOrderSn || isOrderDetailSyncPending || isOrderDetailSyncCooldown}
               >
-                Close
+                <RefreshCw
+                  aria-hidden="true"
+                  className={`h-4 w-4 ${isOrderDetailSyncPending ? "animate-spin" : ""}`}
+                />
               </Button>
             </div>
 
-            {isDetailLoading ? <p className="text-sm text-muted-foreground">Loading detail...</p> : null}
+            {isDetailLoading ? (
+              <p className="text-sm text-muted-foreground">Loading detail...</p>
+            ) : null}
             {isDetailError ? (
               <p className="text-sm text-destructive">
                 {(detailError as Error)?.message ?? "Failed to fetch order detail."}
@@ -784,9 +943,13 @@ export default function OrdersList() {
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="rounded-lg p-3">
-                      <p className="text-xs font-medium text-muted-foreground">Marketplace Status</p>
+                      <p className="text-xs font-medium text-muted-foreground">
+                        Marketplace Status
+                      </p>
                       <div className="mt-2">
-                        <Badge variant={toMarketplaceStatusBadgeVariant(orderDetail.marketplace_status)}>
+                        <Badge
+                          variant={toMarketplaceStatusBadgeVariant(orderDetail.marketplace_status)}
+                        >
                           {toMarketplaceStatusLabel(orderDetail.marketplace_status)}
                         </Badge>
                       </div>
@@ -856,7 +1019,10 @@ export default function OrdersList() {
                       </colgroup>
                       <tbody>
                         {itemRows.map((item, index) => (
-                          <tr key={`${item?.sku ?? "empty"}-${index}`} className="border-t border-border">
+                          <tr
+                            key={`${item?.sku ?? "empty"}-${index}`}
+                            className="border-t border-border"
+                          >
                             <td className="px-4 py-3 text-foreground">{item?.sku ?? "-"}</td>
                             <td className="px-4 py-3 text-foreground">{item?.quantity ?? "-"}</td>
                             <td className="px-4 py-3 text-foreground">
@@ -868,6 +1034,31 @@ export default function OrdersList() {
                     </table>
                   </div>
                 </div>
+
+                {detailActionConfig ? (
+                  <div className="mt-4">
+                    <Button
+                      type="button"
+                      className="w-full"
+                      onClick={() => {
+                        if (!selectedOrderSn || detailActionConfig.disabled) {
+                          return;
+                        }
+                        mutateOrderAction({
+                          orderSn: selectedOrderSn,
+                          action: detailActionConfig.action,
+                        });
+                      }}
+                      disabled={
+                        detailActionConfig.disabled || isOrderActionPending || !selectedOrderSn
+                      }
+                    >
+                      {isOrderActionPending && !detailActionConfig.disabled
+                        ? `${detailActionConfig.label}...`
+                        : detailActionConfig.label}
+                    </Button>
+                  </div>
+                ) : null}
               </>
             ) : null}
           </div>
