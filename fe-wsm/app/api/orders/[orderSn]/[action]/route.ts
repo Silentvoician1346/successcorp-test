@@ -11,17 +11,20 @@ type BackendActionResponse = {
   message?: string | string[];
 };
 
+// Normalizes backend message variants into a single display string.
 function resolveMessage(message: string | string[] | undefined, fallback: string) {
   if (!message) return fallback;
   if (Array.isArray(message)) return message.join(", ");
   return message;
 }
 
+// Resolves backend API base URL from server/runtime environment variables.
 function getApiBaseUrl() {
   const raw = process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL;
   return raw?.replace(/\/+$/, "") ?? "";
 }
 
+// Validates and maps route action segment to supported backend order actions.
 function toBackendAction(action: string) {
   const normalized = action.trim().toLowerCase();
   if (
@@ -36,6 +39,7 @@ function toBackendAction(action: string) {
   return null;
 }
 
+// Proxies order action requests (pick/pack/ship/sync) to the backend API.
 export async function POST(
   _request: NextRequest,
   context: { params: Promise<ActionParams> },

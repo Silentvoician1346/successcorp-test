@@ -23,7 +23,6 @@ function resolveMessage(message: string | string[] | undefined, fallback: string
 }
 
 async function syncOrders() {
-  console.log("[sync] Start POST /api/orders");
   const response = await fetch("/api/orders", {
     method: "POST",
     cache: "no-store",
@@ -44,7 +43,6 @@ async function syncOrders() {
     throw new Error(resolveMessage(payload?.message, "Failed to sync orders."));
   }
 
-  console.log("[sync] Success response", payload);
   return payload;
 }
 
@@ -54,11 +52,7 @@ export default function SyncOrdersButton() {
 
   const { mutate, isPending } = useMutation({
     mutationFn: syncOrders,
-    onMutate: () => {
-      console.log("[sync] Mutation triggered");
-    },
     onSuccess: (payload) => {
-      console.log("[sync] Mutation success", payload);
       toast.success(resolveMessage(payload?.message, "Orders synchronized."), {
         position: "top-center",
       });

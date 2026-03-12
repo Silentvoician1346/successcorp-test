@@ -1,11 +1,13 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Poppins } from "next/font/google";
-import { Bell, LayoutDashboard, LogOut } from "lucide-react";
+import { Bell, LayoutDashboard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AUTH_COOKIE_NAME, requireAccessToken } from "@/lib/auth";
-import OrdersList from "./orders-list";
-import SyncOrdersButton from "./sync-orders-button";
+import OrdersList from "@/app/services/orders/orders-list";
+import SyncOrdersButton from "@/components/features/orders/sync-orders-button";
+import HeaderEmail from "@/components/features/auth/header-email";
+import SignOutSubmitButton from "@/components/features/auth/sign-out-submit-button";
 
 const poppins = Poppins({
   subsets: ["latin"],
@@ -59,17 +61,9 @@ export default async function DashboardPage() {
             >
               <Bell aria-hidden="true" className="h-5 w-5" />
             </Button>
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20 text-sm font-semibold text-white">
-              SA
-            </div>
+            <HeaderEmail />
             <form action={signOut}>
-              <Button
-                type="submit"
-                variant="ghost"
-                className="bg-transparent text-white hover:bg-transparent hover:text-white"
-              >
-                <LogOut aria-hidden="true" className="h-4 w-4" />
-              </Button>
+              <SignOutSubmitButton />
             </form>
           </div>
         </div>
@@ -77,13 +71,11 @@ export default async function DashboardPage() {
 
       <section className="p-6 sm:p-8 md:p-10">
         <div className="mx-auto max-w-6xl">
-          <h1
-            className={`${poppins.className} text-[24px] leading-[36px] font-bold text-foreground`}
-          >
+          <h1 className={`${poppins.className} text-[24px] leading-9 font-bold text-foreground`}>
             Outbound
           </h1>
           <p
-            className={`${poppins.className} mt-2 text-[12px] leading-[13px] font-normal text-muted-foreground`}
+            className={`${poppins.className} mt-2 text-[12px] leading-3.25 font-normal text-muted-foreground`}
           >
             Manage all outbound process
           </p>

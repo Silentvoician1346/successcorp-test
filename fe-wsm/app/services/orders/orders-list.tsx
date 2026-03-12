@@ -180,12 +180,14 @@ const wmsStatusFilterOptions: StatusFilterOption[] = [
   { value: "SHIPPED", label: "Shipped" },
 ];
 
+// Normalizes backend message variants into a single display string.
 function resolveMessage(message: string | string[] | undefined, fallback: string) {
   if (!message) return fallback;
   if (Array.isArray(message)) return message.join(", ");
   return message;
 }
 
+// Fetches paginated/filtered orders from the API route and normalizes response shape.
 async function fetchOrders(
   page: number,
   pageSize: number,
@@ -233,6 +235,7 @@ async function fetchOrders(
   };
 }
 
+// Fetches a single order detail payload for the selected order.
 async function fetchOrderDetail(orderSn: string) {
   const response = await fetch(`/api/orders?order_sn=${encodeURIComponent(orderSn)}`, {
     cache: "no-store",
@@ -256,6 +259,7 @@ async function fetchOrderDetail(orderSn: string) {
   return payload.order;
 }
 
+// Sends a WMS action (pick/pack/ship) for an order through the API route.
 async function postOrderAction(orderSn: string, action: WmsAction) {
   const response = await fetch(`/api/orders/${encodeURIComponent(orderSn)}/${action}`, {
     method: "POST",
@@ -276,6 +280,7 @@ async function postOrderAction(orderSn: string, action: WmsAction) {
   return payload;
 }
 
+// Triggers marketplace sync for one order and returns API feedback.
 async function syncOrderDetail(orderSn: string) {
   const response = await fetch(`/api/orders/${encodeURIComponent(orderSn)}/sync`, {
     method: "POST",
@@ -296,6 +301,7 @@ async function syncOrderDetail(orderSn: string) {
   return payload;
 }
 
+// Formats ISO datetime strings into a readable locale timestamp.
 function formatDateTime(isoValue: string) {
   const date = new Date(isoValue);
   if (Number.isNaN(date.getTime())) return "-";
@@ -306,6 +312,7 @@ function formatDateTime(isoValue: string) {
   }).format(date);
 }
 
+// Formats numeric values as 2-decimal currency-like numbers.
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
@@ -313,16 +320,19 @@ function formatCurrency(value: number) {
   }).format(value);
 }
 
+// Truncates long text with ellipsis for compact table cells.
 function truncateText(value: string, maxLength: number) {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength)}...`;
 }
 
+// Normalizes raw status text into a consistent lookup key.
 function normalizeStatusKey(status: string | null) {
   if (!status) return "";
   return status.trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
 }
 
+// Converts status codes into human-friendly title case labels.
 function toTitleCaseFromStatus(status: string | null) {
   if (!status) return "-";
   return status
@@ -334,46 +344,54 @@ function toTitleCaseFromStatus(status: string | null) {
     .join(" ");
 }
 
+// Maps marketplace status to badge variant for consistent visual state.
 function toMarketplaceStatusBadgeVariant(status: string | null) {
   const key = normalizeStatusKey(status);
   if (!key) return "outline";
   return marketplaceStatusVariantMap[key] ?? "outline";
 }
 
+// Maps marketplace status to display label with fallback normalization.
 function toMarketplaceStatusLabel(status: string | null) {
   const key = normalizeStatusKey(status);
   if (!key) return "-";
   return marketplaceStatusLabelMap[key] ?? toTitleCaseFromStatus(status);
 }
 
+// Maps shipping status to badge variant for consistent visual state.
 function toShippingStatusBadgeVariant(status: string | null) {
   const key = normalizeStatusKey(status);
   if (!key) return "outline";
   return shippingStatusVariantMap[key] ?? "outline";
 }
 
+// Maps shipping status to display label with fallback normalization.
 function toShippingStatusLabel(status: string | null) {
   const key = normalizeStatusKey(status);
   if (!key) return "-";
   return shippingStatusLabelMap[key] ?? toTitleCaseFromStatus(status);
 }
 
+// Maps WMS status to badge variant for consistent visual state.
 function toWmsStatusBadgeVariant(status: string | null) {
   if (!status) return "outline";
   return wmsStatusVariantMap[status] ?? "outline";
 }
 
+// Maps WMS status to display label.
 function toWmsStatusLabel(status: string | null) {
   if (!status) return "-";
   return wmsStatusLabelMap[status] ?? status.replaceAll("_", " ");
 }
 
+// Converts action codes into user-facing action text.
 function toActionLabel(action: WmsAction) {
   if (action === "pick") return "Pickup";
   if (action === "pack") return "Pack";
   return "Ship";
 }
 
+// Returns the available next WMS action based on current order status.
 function getWmsActionConfig(status: string | null): WmsActionConfig | null {
   if (status === "READY_TO_PICK") {
     return {
@@ -407,6 +425,7 @@ function getWmsActionConfig(status: string | null): WmsActionConfig | null {
   return null;
 }
 
+// Deduplicates, trims, and sorts selected filter values.
 function normalizeFilterSelection(values: string[]) {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort();
 }
@@ -418,6 +437,7 @@ type StatusFilterDropdownProps = {
   onSave: (nextValues: string[]) => void;
 };
 
+// Reusable dropdown filter control used by status columns.
 function StatusFilterDropdown({ title, options, value, onSave }: StatusFilterDropdownProps) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string[]>(value);
@@ -516,6 +536,7 @@ function StatusFilterDropdown({ title, options, value, onSave }: StatusFilterDro
   );
 }
 
+// Main orders table component with filters, pagination, details, and row actions.
 export default function OrdersList() {
   const queryClient = useQueryClient();
   const [selectedOrderSn, setSelectedOrderSn] = useState<string | null>(null);

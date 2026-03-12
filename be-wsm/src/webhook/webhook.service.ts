@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Prisma, WebhookEventType } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,7 +16,10 @@ export class WebhookService {
     const status = payload.status.trim();
     const shopId = payload.shop_id?.trim() || null;
     const payloadJson = this.toJsonPayload(payload);
-    const eventKey = this.buildEventKey(WebhookEventType.ORDER_STATUS, payloadJson);
+    const eventKey = this.buildEventKey(
+      WebhookEventType.ORDER_STATUS,
+      payloadJson,
+    );
 
     return this.prisma.$transaction(async (tx) => {
       const event = await this.createWebhookEventSafely(tx, {
@@ -149,15 +148,11 @@ export class WebhookService {
     const shopId = payload.shop_id?.trim() || null;
 
     if (!shippingState) {
-      throw new BadRequestException(
-        'shipping_state or status is required',
-      );
+      throw new BadRequestException('shipping_state or status is required');
     }
 
     const trackingNumber =
-      payload.tracking_number?.trim() ||
-      payload.tracking_no?.trim() ||
-      null;
+      payload.tracking_number?.trim() || payload.tracking_no?.trim() || null;
 
     const payloadJson = this.toJsonPayload(payload);
     const eventKey = this.buildEventKey(

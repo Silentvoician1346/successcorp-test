@@ -4,6 +4,10 @@
   "scripts": {
     "dev:fe": "pnpm --filter fe-wsm run dev",
     "dev:be": "pnpm --filter be-wsm run start:dev",
+    "db:up": "docker compose -f be-wsm/docker-compose.yml up -d",
+    "db:ps": "docker compose -f be-wsm/docker-compose.yml ps",
+    "db:logs": "docker compose -f be-wsm/docker-compose.yml logs -f db",
+    "db:down": "docker compose -f be-wsm/docker-compose.yml down",
     "db:migrate": "pnpm --filter be-wsm run prisma:generate",
     "dev": "concurrently \"pnpm run dev:fe\" \"pnpm run dev:be\""
   },
