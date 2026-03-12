@@ -55,17 +55,20 @@ type BackendOrderDetailResponse = {
   message?: string | string[];
 };
 
+// Normalizes backend message variants into a single display string.
 function resolveMessage(message: string | string[] | undefined, fallback: string) {
   if (!message) return fallback;
   if (Array.isArray(message)) return message.join(", ");
   return message;
 }
 
+// Resolves backend API base URL from server/runtime environment variables.
 function getApiBaseUrl() {
   const raw = process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL;
   return raw?.replace(/\/+$/, "") ?? "";
 }
 
+// Returns a single order detail (if order_sn is provided) or a filtered order list.
 export async function GET(request: NextRequest) {
   const token = (await cookies()).get(AUTH_COOKIE_NAME)?.value ?? null;
   if (!token) {
@@ -172,6 +175,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// Triggers backend full order synchronization and returns sync summary.
 export async function POST() {
   const token = (await cookies()).get(AUTH_COOKIE_NAME)?.value ?? null;
   if (!token) {

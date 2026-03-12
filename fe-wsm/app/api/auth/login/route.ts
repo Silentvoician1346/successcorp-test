@@ -12,17 +12,20 @@ type BackendLoginResponse = {
   message?: string | string[];
 };
 
+// Normalizes backend message variants into a single display string.
 function resolveMessage(message: string | string[] | undefined, fallback: string) {
   if (!message) return fallback;
   if (Array.isArray(message)) return message.join(", ");
   return message;
 }
 
+// Resolves backend API base URL from server/runtime environment variables.
 function getApiBaseUrl() {
   const raw = process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL;
   return raw?.replace(/\/+$/, "") ?? "";
 }
 
+// Proxies login requests to backend auth service and stores access token in cookie.
 export async function POST(request: Request) {
   const apiBaseUrl = getApiBaseUrl();
   if (!apiBaseUrl) {

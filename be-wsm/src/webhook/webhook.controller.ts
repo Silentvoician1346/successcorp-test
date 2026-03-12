@@ -1,4 +1,10 @@
-import { Body, Controller, Post, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Post,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
 import { OrderStatusWebhookDto } from './dto/order-status-webhook.dto';
 import { ShippingStatusWebhookDto } from './dto/shipping-status-webhook.dto';
 import { WebhookService } from './webhook.service';
@@ -18,7 +24,8 @@ export class WebhookController {
   async handleOrderStatus(@Body() payload: OrderStatusWebhookDto) {
     console.log('[webhook][order-status] received payload:', payload);
     try {
-      const result = await this.webhookService.handleOrderStatusWebhook(payload);
+      const result =
+        await this.webhookService.handleOrderStatusWebhook(payload);
       console.log('[webhook][order-status] response:', result);
       return result;
     } catch (error) {

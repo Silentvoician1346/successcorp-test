@@ -171,7 +171,7 @@ export default function LoginForm() {
               </span>
             </div>
             <p
-              className={`${poppins.className} text-[14px] leading-[13px] font-normal text-[var(--on-primary-muted)]`}
+              className={`${poppins.className} text-[14px] leading-3.25 font-normal text-on-primary-muted`}
             >
               WSM Dashboard
             </p>
@@ -179,7 +179,7 @@ export default function LoginForm() {
               MANAGE YOUR ORDER WITH CLARITY
             </h2>
             <p
-              className={`${poppins.className} mt-5 text-[14px] leading-[22px] font-semibold text-[var(--on-primary-muted)]`}
+              className={`${poppins.className} mt-5 text-[14px] leading-5.5 font-semibold text-on-primary-muted`}
             >
               Track orders, manage orders, and streamline operations -- all in one place.
             </p>
@@ -205,7 +205,7 @@ export default function LoginForm() {
                 Welcome Back
               </h1>
               <p
-                className={`${poppins.className} mt-1 text-[14px] leading-[22px] font-normal text-muted-foreground`}
+                className={`${poppins.className} mt-1 text-[14px] leading-5.5 font-normal text-muted-foreground`}
               >
                 Sign to your account to continue
               </p>
@@ -215,13 +215,13 @@ export default function LoginForm() {
               <div className="block">
                 <Label
                   htmlFor="email"
-                  className={`${poppins.className} mb-1 block text-[14px] leading-[22px] font-semibold text-foreground`}
+                  className={`${poppins.className} mb-1 block text-[14px] leading-5.5 font-semibold text-foreground`}
                 >
                   Email Address
                 </Label>
                 <Input
                   id="email"
-                  className={`${poppins.className} h-auto w-full border-border px-3 py-2 text-[14px] leading-[22px] font-normal text-foreground focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20 ${showEmailError ? "border-destructive focus-visible:border-destructive focus-visible:ring-destructive/20" : ""}`}
+                  className={`${poppins.className} h-auto w-full border-border px-3 py-2 text-[14px] leading-5.5 font-normal text-foreground focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20 ${showEmailError ? "border-destructive focus-visible:border-destructive focus-visible:ring-destructive/20" : ""}`}
                   type="email"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
@@ -234,7 +234,7 @@ export default function LoginForm() {
                 {showEmailError ? (
                   <p
                     id="email-error"
-                    className={`${poppins.className} mt-1 text-[13px] leading-[20px] font-normal text-destructive`}
+                    className={`${poppins.className} mt-1 text-[13px] leading-5 font-normal text-destructive`}
                   >
                     {emailError}
                   </p>
@@ -244,14 +244,14 @@ export default function LoginForm() {
               <div className="block">
                 <Label
                   htmlFor="password"
-                  className={`${poppins.className} mb-1 block text-[14px] leading-[22px] font-semibold text-foreground`}
+                  className={`${poppins.className} mb-1 block text-[14px] leading-5.5 font-semibold text-foreground`}
                 >
                   Password
                 </Label>
                 <div className="relative">
                   <Input
                     id="password"
-                    className={`${poppins.className} h-auto w-full border-border px-3 py-2 pr-11 text-[14px] leading-[22px] font-normal text-foreground focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20 ${
+                    className={`${poppins.className} h-auto w-full border-border px-3 py-2 pr-11 text-[14px] leading-5.5 font-normal text-foreground focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20 ${
                       showPasswordError
                         ? "border-destructive focus-visible:border-destructive focus-visible:ring-destructive/20"
                         : ""
@@ -283,7 +283,7 @@ export default function LoginForm() {
                 {showPasswordError ? (
                   <p
                     id="password-error"
-                    className={`${poppins.className} mt-1 text-[13px] leading-[20px] font-normal text-destructive`}
+                    className={`${poppins.className} mt-1 text-[13px] leading-5 font-normal text-destructive`}
                   >
                     {passwordError}
                   </p>
@@ -300,7 +300,7 @@ export default function LoginForm() {
                   />
                   <Label
                     htmlFor="remember-me"
-                    className={`${poppins.className} text-[14px] leading-[22px] font-normal text-foreground`}
+                    className={`${poppins.className} text-[14px] leading-5.5 font-normal text-foreground`}
                   >
                     Remember me
                   </Label>
@@ -309,7 +309,7 @@ export default function LoginForm() {
                 <Button
                   type="button"
                   variant="link"
-                  className={`${poppins.className} h-auto px-0 text-[14px] leading-[22px] font-semibold text-primary`}
+                  className={`${poppins.className} h-auto px-0 text-[14px] leading-5.5 font-semibold text-primary`}
                 >
                   Forgot password?
                 </Button>
@@ -318,14 +318,14 @@ export default function LoginForm() {
               <Button
                 type="submit"
                 disabled={isSubmitting}
-                className={`${poppins.className} h-auto w-full rounded-lg bg-primary px-4 py-3 text-[14px] leading-[22px] font-semibold text-white hover:bg-[var(--primary-hover)]`}
+                className={`${poppins.className} h-auto w-full rounded-lg bg-primary px-4 py-3 text-[14px] leading-5.5 font-semibold text-white hover:bg-(--primary-hover)`}
               >
                 {isSubmitting ? "Signing in..." : "Sign in to Dashboard"}
               </Button>
 
               {submitError ? (
                 <p
-                  className={`${poppins.className} rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[13px] leading-[20px] text-destructive`}
+                  className={`${poppins.className} rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[13px] leading-5 text-destructive`}
                 >
                   {submitError}
                 </p>
@@ -335,7 +335,7 @@ export default function LoginForm() {
                 <Button
                   type="button"
                   onClick={() => toast.success("Login successful.", getToastTarget())}
-                  className={`${poppins.className} h-auto rounded-lg bg-[var(--success)] px-3 py-2 text-[13px] leading-5 font-semibold text-white hover:bg-[var(--success)]/90`}
+                  className={`${poppins.className} h-auto rounded-lg bg-(--success) px-3 py-2 text-[13px] leading-5 font-semibold text-white hover:bg-(--success)/90`}
                 >
                   Success Toast
                 </Button>
@@ -344,7 +344,7 @@ export default function LoginForm() {
                   onClick={() =>
                     toast.warning("Your session is about to expire.", getToastTarget())
                   }
-                  className={`${poppins.className} h-auto rounded-lg bg-amber-500 px-3 py-2 text-[13px] leading-[20px] font-semibold text-white hover:bg-amber-500/90`}
+                  className={`${poppins.className} h-auto rounded-lg bg-amber-500 px-3 py-2 text-[13px] leading-5 font-semibold text-white hover:bg-amber-500/90`}
                 >
                   Warning Toast
                 </Button>
@@ -353,7 +353,7 @@ export default function LoginForm() {
                   onClick={() =>
                     toast.error("Unable to sign in. Please try again.", getToastTarget())
                   }
-                  className={`${poppins.className} h-auto rounded-lg bg-[var(--danger)] px-3 py-2 text-[13px] leading-5 font-semibold text-white hover:bg-[var(--danger)]/90`}
+                  className={`${poppins.className} h-auto rounded-lg bg-(--danger) py-2 text-[13px] leading-5 font-semibold text-white hover:bg-(--danger)/90`}
                 >
                   Error Toast
                 </Button>
@@ -362,7 +362,7 @@ export default function LoginForm() {
               <div className="flex items-center gap-3 py-1">
                 <Separator className="flex-1 bg-border" />
                 <span
-                  className={`${poppins.className} text-[14px] leading-[22px] font-normal text-muted-foreground`}
+                  className={`${poppins.className} text-[14px] leading-5.5 font-normal text-muted-foreground`}
                 >
                   or
                 </span>
@@ -372,7 +372,7 @@ export default function LoginForm() {
               <Button
                 type="button"
                 variant="outline"
-                className={`${poppins.className} h-auto w-full items-center justify-center gap-2 border-border bg-white px-4 py-3 text-[14px] leading-[22px] font-semibold text-foreground`}
+                className={`${poppins.className} h-auto w-full items-center justify-center gap-2 border-border bg-white px-4 py-3 text-[14px] leading-5.5 font-semibold text-foreground`}
               >
                 <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none">
                   <path
@@ -398,14 +398,14 @@ export default function LoginForm() {
 
             <div className="mt-6 flex items-center justify-center gap-2">
               <span
-                className={`${poppins.className} text-[14px] leading-[22px] font-normal text-muted-foreground`}
+                className={`${poppins.className} text-[14px] leading-5.5 font-normal text-muted-foreground`}
               >
                 Don&apos;t have an account?
               </span>
               <Button
                 type="button"
                 variant="link"
-                className={`${poppins.className} h-auto px-0 text-[14px] leading-[22px] font-semibold text-primary`}
+                className={`${poppins.className} h-auto px-0 text-[14px] leading-5.5 font-semibold text-primary`}
               >
                 Sign up free
               </Button>
