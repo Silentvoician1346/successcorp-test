@@ -5,6 +5,7 @@ import { Bell, LayoutDashboard, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AUTH_COOKIE_NAME, requireAccessToken } from "@/lib/auth";
 import OrdersList from "./orders-list";
+import SyncOrdersButton from "./sync-orders-button";
 
 const poppins = Poppins({
   subsets: ["latin"],
@@ -48,6 +49,7 @@ export default async function DashboardPage() {
           </nav>
 
           <div className="flex items-center gap-3">
+            <SyncOrdersButton />
             <Button
               type="button"
               size="icon"

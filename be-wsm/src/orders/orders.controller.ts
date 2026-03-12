@@ -10,7 +10,14 @@ export class OrdersController {
 
   @Get()
   getOrders(@Query() query: GetOrdersQueryDto) {
-    return this.ordersService.getOrders(query.wms_status);
+    return this.ordersService.getOrders(
+      query.wms_status,
+      query.marketplace_status,
+      query.shipping_status,
+      query.page,
+      query.page_size,
+      query.updated_at_order,
+    );
   }
 
   @Get(':order_sn')

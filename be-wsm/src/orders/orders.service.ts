@@ -3,6 +3,7 @@ import {
   BadRequestException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -35,6 +36,26 @@ type MarketplaceOrderListApiResponse = {
   data?: unknown;
 };
 
+type MarketplaceAuthorizeApiResponse = {
+  message?: string;
+  data?: {
+    code?: string;
+    shop_id?: string;
+    state?: string;
+  };
+};
+
+type MarketplaceTokenApiResponse = {
+  message?: string;
+  data?: {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    token_type?: string;
+    scope?: string;
+  };
+};
+
 type MarketplaceTokenConnection = Pick<
   MarketplaceConnection,
   | 'id'
@@ -45,6 +66,8 @@ type MarketplaceTokenConnection = Pick<
   | 'refreshToken'
   | 'accessTokenExpiresAt'
   | 'refreshTokenExpiresAt'
+  | 'tokenType'
+  | 'scope'
 >;
 
 type SyncOrderItem = {
@@ -67,18 +90,65 @@ type SyncOrderRecord = {
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
   ) {}
 
-  async getOrders(wmsStatus?: WmsStatus) {
-    const orders = await this.prisma.order.findMany({
-      where: wmsStatus ? { wmsStatus } : undefined,
-      orderBy: { updatedAt: 'desc' },
-    });
+  async getOrders(
+    wmsStatuses?: WmsStatus[],
+    marketplaceStatuses?: string[],
+    shippingStatuses?: string[],
+    page?: number,
+    pageSize?: number,
+    updatedAtOrder?: Prisma.SortOrder,
+  ) {
+    const safePage = page && page > 0 ? page : 1;
+    const safePageSize = pageSize && pageSize > 0 ? pageSize : 10;
+    const safeUpdatedAtOrder = updatedAtOrder ?? 'desc';
+    const safeWmsStatuses =
+      wmsStatuses?.filter((status): status is WmsStatus => Boolean(status)) ?? [];
+    const safeMarketplaceStatuses =
+      marketplaceStatuses
+        ?.map((status) => status.trim())
+        .filter(Boolean) ?? [];
+    const safeShippingStatuses =
+      shippingStatuses?.map((status) => status.trim()).filter(Boolean) ?? [];
+
+    const where: Prisma.OrderWhereInput = {};
+    if (safeWmsStatuses.length > 0) {
+      where.wmsStatus = { in: safeWmsStatuses };
+    }
+    if (safeMarketplaceStatuses.length > 0) {
+      where.marketplaceStatus = { in: safeMarketplaceStatuses };
+    }
+    if (safeShippingStatuses.length > 0) {
+      where.shippingStatus = { in: safeShippingStatuses };
+    }
+
+    const [total, orders] = await this.prisma.$transaction([
+      this.prisma.order.count({
+        where,
+      }),
+      this.prisma.order.findMany({
+        where,
+        orderBy: { updatedAt: safeUpdatedAtOrder },
+        skip: (safePage - 1) * safePageSize,
+        take: safePageSize,
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / safePageSize));
 
     return {
+      pagination: {
+        page: safePage,
+        page_size: safePageSize,
+        total,
+        total_pages: totalPages,
+      },
       orders: orders.map((order) => ({
         order_sn: order.orderSn,
         wms_status: order.wmsStatus,
@@ -159,138 +229,149 @@ export class OrdersService {
   }
 
   async syncOrdersFromMarketplace() {
-    const baseUrl = this.getMarketplaceBaseUrl();
-    const endpoint = `${baseUrl}/order/list`;
+    this.logger.log('Starting order sync from marketplace');
+    try {
+      const baseUrl = this.getMarketplaceBaseUrl();
+      const endpoint = `${baseUrl}/order/list`;
 
-    const {
-      accessToken,
-      envAccessToken,
-      connection,
-    } = await this.resolveMarketplaceAuthContext(baseUrl);
-    const marketplaceOrders = await this.callMarketplaceOrderList(
-      endpoint,
-      baseUrl,
-      accessToken,
-      envAccessToken,
-      connection,
-    );
+      const { accessToken, connection } =
+        await this.resolveMarketplaceAuthContext(baseUrl);
+      this.logger.log(`Marketplace auth source: connection ${connection.id}`);
 
-    let created = 0;
-    let updated = 0;
-    let skipped = 0;
+      const marketplaceOrders = await this.callMarketplaceOrderList(
+        endpoint,
+        baseUrl,
+        accessToken,
+        connection,
+      );
+      this.logger.log(
+        `Marketplace order list fetched: ${marketplaceOrders.length} records`,
+      );
 
-    for (const payload of marketplaceOrders) {
-      const normalized = this.normalizeMarketplaceOrderRecord(payload);
-      if (!normalized) {
-        skipped += 1;
-        continue;
-      }
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
 
-      const activeConnection = await this.prisma.marketplaceConnection.findFirst({
-        where: {
-          shopId: normalized.shopId,
-          isActive: true,
-        },
-        orderBy: { updatedAt: 'desc' },
-        select: {
-          id: true,
-          marketplace: true,
-          shopId: true,
-        },
-      });
+      for (const payload of marketplaceOrders) {
+        const normalized = this.normalizeMarketplaceOrderRecord(payload);
+        if (!normalized) {
+          skipped += 1;
+          this.logger.warn(
+            `Skipping invalid marketplace order payload (skipped=${skipped})`,
+          );
+          continue;
+        }
 
-      const preferredConnection =
-        connection && connection.shopId === normalized.shopId ? connection : null;
-      const marketplace =
-        activeConnection?.marketplace ??
-        preferredConnection?.marketplace ??
-        this.inferMarketplaceType(normalized.shopId);
-      const marketplaceConnectionId =
-        activeConnection?.id ?? preferredConnection?.id ?? null;
-
-      const existingOrder = await this.prisma.order.findUnique({
-        where: {
-          marketplace_shopId_orderSn: {
-            marketplace,
-            shopId: normalized.shopId,
-            orderSn: normalized.orderSn,
-          },
-        },
-        select: {
-          id: true,
-        },
-      });
-
-      const orderData = {
-        marketplaceConnectionId,
-        marketplaceStatus: normalized.marketplaceStatus,
-        shippingStatus: normalized.shippingStatus,
-        trackingNumber: normalized.trackingNumber,
-        totalAmount: normalized.totalAmount,
-        rawMarketplacePayload: normalized.rawMarketplacePayload,
-        marketplaceCreatedAt: normalized.marketplaceCreatedAt ?? undefined,
-        syncedAt: new Date(),
-      };
-
-      const order = existingOrder
-        ? await this.prisma.order.update({
-            where: { id: existingOrder.id },
-            data: orderData,
-          })
-        : await this.prisma.order.create({
-            data: {
-              orderSn: normalized.orderSn,
+        const activeConnection =
+          await this.prisma.marketplaceConnection.findFirst({
+            where: {
               shopId: normalized.shopId,
-              marketplace,
-              ...orderData,
+              isActive: true,
+            },
+            orderBy: { updatedAt: 'desc' },
+            select: {
+              id: true,
+              marketplace: true,
+              shopId: true,
             },
           });
 
-      await this.prisma.orderItem.deleteMany({
-        where: { orderId: order.id },
-      });
+        const preferredConnection =
+          connection && connection.shopId === normalized.shopId
+            ? connection
+            : null;
+        const marketplace =
+          activeConnection?.marketplace ??
+          preferredConnection?.marketplace ??
+          this.inferMarketplaceType(normalized.shopId);
+        const marketplaceConnectionId =
+          activeConnection?.id ?? preferredConnection?.id ?? null;
 
-      if (normalized.items.length > 0) {
-        await this.prisma.orderItem.createMany({
-          data: normalized.items.map((item) => ({
-            orderId: order.id,
-            sku: item.sku,
-            quantity: item.quantity,
-            price: item.price,
-          })),
+        const existingOrder = await this.prisma.order.findUnique({
+          where: {
+            marketplace_shopId_orderSn: {
+              marketplace,
+              shopId: normalized.shopId,
+              orderSn: normalized.orderSn,
+            },
+          },
+          select: {
+            id: true,
+          },
         });
+
+        const orderData = {
+          marketplaceConnectionId,
+          marketplaceStatus: normalized.marketplaceStatus,
+          shippingStatus: normalized.shippingStatus,
+          trackingNumber: normalized.trackingNumber,
+          totalAmount: normalized.totalAmount,
+          rawMarketplacePayload: normalized.rawMarketplacePayload,
+          marketplaceCreatedAt: normalized.marketplaceCreatedAt ?? undefined,
+          syncedAt: new Date(),
+        };
+
+        const order = existingOrder
+          ? await this.prisma.order.update({
+              where: { id: existingOrder.id },
+              data: orderData,
+            })
+          : await this.prisma.order.create({
+              data: {
+                orderSn: normalized.orderSn,
+                shopId: normalized.shopId,
+                marketplace,
+                ...orderData,
+              },
+            });
+
+        await this.prisma.orderItem.deleteMany({
+          where: { orderId: order.id },
+        });
+
+        if (normalized.items.length > 0) {
+          await this.prisma.orderItem.createMany({
+            data: normalized.items.map((item) => ({
+              orderId: order.id,
+              sku: item.sku,
+              quantity: item.quantity,
+              price: item.price,
+            })),
+          });
+        }
+
+        if (existingOrder) {
+          updated += 1;
+          this.logger.log(`Updated order ${normalized.orderSn}`);
+        } else {
+          created += 1;
+          this.logger.log(`Created order ${normalized.orderSn}`);
+        }
       }
 
-      if (existingOrder) {
-        updated += 1;
-      } else {
-        created += 1;
-      }
+      this.logger.log(
+        `Order sync completed: fetched=${marketplaceOrders.length}, created=${created}, updated=${updated}, skipped=${skipped}`,
+      );
+
+      return {
+        message: 'Orders synchronized from marketplace',
+        summary: {
+          fetched: marketplaceOrders.length,
+          created,
+          updated,
+          skipped,
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      this.logger.error(`Order sync failed: ${message}`, stack);
+      throw error;
     }
-
-    return {
-      message: 'Orders synchronized from marketplace',
-      summary: {
-        fetched: marketplaceOrders.length,
-        created,
-        updated,
-        skipped,
-      },
-    };
   }
 
   private async resolveMarketplaceAuthContext(baseUrl: string) {
-    const envAccessToken =
-      this.configService.get<string>('MARKETPLACE_ACCESS_TOKEN')?.trim() ?? '';
-    if (envAccessToken) {
-      return {
-        accessToken: envAccessToken,
-        envAccessToken,
-        connection: null,
-      };
-    }
-
-    const connection = await this.prisma.marketplaceConnection.findFirst({
+    let connection = await this.prisma.marketplaceConnection.findFirst({
       where: { isActive: true },
       orderBy: { updatedAt: 'desc' },
       select: {
@@ -302,19 +383,21 @@ export class OrdersService {
         refreshToken: true,
         accessTokenExpiresAt: true,
         refreshTokenExpiresAt: true,
+        tokenType: true,
+        scope: true,
       },
     });
 
     if (!connection) {
-      throw new InternalServerErrorException(
-        'Marketplace connection not found. Configure MARKETPLACE_ACCESS_TOKEN or connect a shop first.',
+      this.logger.warn(
+        'No active marketplace connection found in DB. Running OAuth bootstrap.',
       );
+      connection = await this.bootstrapMarketplaceConnection(baseUrl);
     }
 
     const accessToken = await this.getMarketplaceAccessToken(connection, baseUrl);
     return {
       accessToken,
-      envAccessToken,
       connection,
     };
   }
@@ -323,20 +406,47 @@ export class OrdersService {
     endpoint: string,
     baseUrl: string,
     accessToken: string,
-    envAccessToken: string,
-    connection: MarketplaceTokenConnection | null,
+    connection: MarketplaceTokenConnection,
   ) {
+    this.logger.log(`Calling marketplace endpoint: ${endpoint}`);
     try {
       return await this.requestMarketplaceOrderList(endpoint, accessToken);
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
-        if (status === 401 && !envAccessToken && connection?.refreshToken) {
-          const refreshedToken = await this.refreshMarketplaceAccessToken(
-            connection,
-            baseUrl,
+        if (status === 401) {
+          if (connection.refreshToken) {
+            this.logger.warn(
+              'Marketplace returned 401 for order list, trying token refresh',
+            );
+            const refreshedToken = await this.refreshMarketplaceAccessToken(
+              connection,
+              baseUrl,
+            );
+            return this.requestMarketplaceOrderList(endpoint, refreshedToken);
+          }
+
+          this.logger.warn(
+            'Marketplace returned 401 for order list and no refresh token available. Running OAuth bootstrap.',
           );
-          return this.requestMarketplaceOrderList(endpoint, refreshedToken);
+          const bootstrapped = await this.bootstrapMarketplaceConnection(
+            baseUrl,
+            {
+              shopId: connection.shopId,
+              marketplace: connection.marketplace,
+            },
+          );
+          const bootstrappedAccessToken =
+            bootstrapped.accessToken?.trim() ?? '';
+          if (!bootstrappedAccessToken) {
+            throw new InternalServerErrorException(
+              'Marketplace OAuth bootstrap did not return a usable access token',
+            );
+          }
+          return this.requestMarketplaceOrderList(
+            endpoint,
+            bootstrappedAccessToken,
+          );
         }
       }
 
@@ -359,7 +469,180 @@ export class OrdersService {
       );
     }
 
+    this.logger.log(
+      `Marketplace order list response OK (records=${response.data.data.length})`,
+    );
     return response.data.data;
+  }
+
+  private async bootstrapMarketplaceConnection(
+    baseUrl: string,
+    options?: {
+      shopId?: string;
+      marketplace?: MarketplaceType;
+    },
+  ) {
+    const { partnerId, partnerKey } = this.getMarketplacePartnerCredentials();
+    const shopId =
+      options?.shopId ??
+      (this.configService.get<string>('MARKETPLACE_SHOP_ID')?.trim() ||
+        'shopee-123');
+    const state =
+      this.configService.get<string>('MARKETPLACE_OAUTH_STATE')?.trim() || 'wsm';
+    const redirectUri =
+      this.configService.get<string>('MARKETPLACE_REDIRECT_URI')?.trim() ||
+      'https://example.com/callback';
+
+    this.logger.log(
+      `Running marketplace OAuth bootstrap for shop ${shopId} (state=${state})`,
+    );
+
+    const authorizeApiPath = '/oauth/authorize';
+    const authorizeTimestamp = Math.floor(Date.now() / 1000);
+    const authorizeBase = `${partnerId}${authorizeApiPath}${authorizeTimestamp}${shopId}`;
+    const authorizeSign = this.createMarketplaceSign(partnerKey, authorizeBase);
+    const authorizeEndpoint =
+      `${baseUrl}${authorizeApiPath}` +
+      `?shop_id=${encodeURIComponent(shopId)}` +
+      `&state=${encodeURIComponent(state)}` +
+      `&partner_id=${encodeURIComponent(partnerId)}` +
+      `&timestamp=${authorizeTimestamp}` +
+      `&sign=${authorizeSign}` +
+      `&redirect=${encodeURIComponent(redirectUri)}`;
+
+    let authCode = '';
+    let resolvedShopId = shopId;
+    try {
+      const authorizeResponse =
+        await axios.get<MarketplaceAuthorizeApiResponse>(authorizeEndpoint, {
+          headers: { Accept: 'application/json' },
+          timeout: 10000,
+        });
+
+      authCode = authorizeResponse.data?.data?.code?.trim() ?? '';
+      const responseShopId = authorizeResponse.data?.data?.shop_id?.trim() ?? '';
+      if (responseShopId) {
+        resolvedShopId = responseShopId;
+      }
+    } catch (error) {
+      throw this.toMarketplaceError(error, authorizeEndpoint, 'authorize');
+    }
+
+    if (!authCode) {
+      throw new BadGatewayException(
+        'Marketplace authorize response missing code',
+      );
+    }
+
+    const tokenApiPath = '/oauth/token';
+    const tokenTimestamp = Math.floor(Date.now() / 1000);
+    const tokenBase = `${partnerId}${tokenApiPath}${tokenTimestamp}${authCode}`;
+    const tokenSign = this.createMarketplaceSign(partnerKey, tokenBase);
+    const tokenEndpoint =
+      `${baseUrl}${tokenApiPath}` +
+      `?partner_id=${encodeURIComponent(partnerId)}` +
+      `&timestamp=${tokenTimestamp}` +
+      `&sign=${tokenSign}`;
+
+    let tokenData: MarketplaceTokenApiResponse['data'] | undefined;
+    try {
+      const tokenResponse = await axios.post<MarketplaceTokenApiResponse>(
+        tokenEndpoint,
+        {
+          grant_type: 'authorization_code',
+          code: authCode,
+        },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 10000,
+        },
+      );
+      tokenData = tokenResponse.data?.data;
+    } catch (error) {
+      throw this.toMarketplaceError(error, tokenEndpoint, 'token exchange');
+    }
+
+    const nextAccessToken = tokenData?.access_token?.trim();
+    if (!nextAccessToken) {
+      throw new BadGatewayException(
+        'Marketplace token response missing access_token',
+      );
+    }
+
+    const nextRefreshToken = tokenData?.refresh_token?.trim() || null;
+    const expiresInSeconds =
+      typeof tokenData?.expires_in === 'number' ? tokenData.expires_in : null;
+    const accessTokenExpiresAt = expiresInSeconds
+      ? new Date(Date.now() + expiresInSeconds * 1000)
+      : null;
+    const marketplace =
+      options?.marketplace ?? this.inferMarketplaceType(resolvedShopId);
+
+    const connection = await this.prisma.marketplaceConnection.upsert({
+      where: {
+        marketplace_shopId: {
+          marketplace,
+          shopId: resolvedShopId,
+        },
+      },
+      update: {
+        accessToken: nextAccessToken,
+        refreshToken: nextRefreshToken,
+        accessTokenExpiresAt,
+        tokenType: tokenData?.token_type ?? undefined,
+        scope: tokenData?.scope ?? undefined,
+        isActive: true,
+      },
+      create: {
+        marketplace,
+        shopId: resolvedShopId,
+        accessToken: nextAccessToken,
+        refreshToken: nextRefreshToken,
+        accessTokenExpiresAt,
+        tokenType: tokenData?.token_type ?? null,
+        scope: tokenData?.scope ?? null,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        marketplace: true,
+        shopId: true,
+        isActive: true,
+        accessToken: true,
+        refreshToken: true,
+        accessTokenExpiresAt: true,
+        refreshTokenExpiresAt: true,
+        tokenType: true,
+        scope: true,
+      },
+    });
+
+    this.logger.log(
+      `Marketplace OAuth bootstrap completed and token saved (connection=${connection.id}, shop=${connection.shopId})`,
+    );
+
+    return connection;
+  }
+
+  private getMarketplacePartnerCredentials() {
+    const partnerId =
+      this.configService.get<string>('MARKETPLACE_PARTNER_ID') ??
+      this.configService.get<string>('MARKETPLACE_CLIENT_ID');
+    const partnerKey =
+      this.configService.get<string>('MARKETPLACE_PARTNER_KEY') ??
+      this.configService.get<string>('MARKETPLACE_CLIENT_SECRET');
+
+    if (!partnerId || !partnerKey) {
+      throw new InternalServerErrorException(
+        'MARKETPLACE_PARTNER_ID/MARKETPLACE_PARTNER_KEY (or MARKETPLACE_CLIENT_ID/SECRET) are required',
+      );
+    }
+
+    return { partnerId, partnerKey };
+  }
+
+  private createMarketplaceSign(partnerKey: string, base: string) {
+    return createHmac('sha256', partnerKey).update(base).digest('hex');
   }
 
   private normalizeMarketplaceOrderRecord(payload: unknown): SyncOrderRecord | null {
@@ -563,7 +846,7 @@ export class OrdersService {
     const baseUrl = this.getMarketplaceBaseUrl();
     const endpoint = `${baseUrl}/logistic/ship`;
 
-    const connection = await this.prisma.marketplaceConnection.findUnique({
+    let connection = await this.prisma.marketplaceConnection.findUnique({
       where: {
         marketplace_shopId: {
           marketplace: order.marketplace,
@@ -586,19 +869,18 @@ export class OrdersService {
 
     const channelId =
       this.configService.get<string>('MARKETPLACE_CHANNEL_ID') ?? 'JNE';
-    const envAccessToken =
-      this.configService.get<string>('MARKETPLACE_ACCESS_TOKEN')?.trim() ?? '';
 
-    let accessToken = envAccessToken;
-    if (!accessToken) {
-      if (!connection) {
-        throw new InternalServerErrorException(
-          `Marketplace connection not found for ${order.marketplace}/${order.shopId}`,
-        );
-      }
-      accessToken = await this.getMarketplaceAccessToken(connection, baseUrl);
+    if (!connection) {
+      this.logger.warn(
+        `Marketplace connection not found for ${order.marketplace}/${order.shopId}. Running OAuth bootstrap.`,
+      );
+      connection = await this.bootstrapMarketplaceConnection(baseUrl, {
+        shopId: order.shopId,
+        marketplace: order.marketplace,
+      });
     }
 
+    let accessToken = await this.getMarketplaceAccessToken(connection, baseUrl);
     try {
       return await this.requestMarketplaceShip(
         endpoint,
@@ -609,16 +891,39 @@ export class OrdersService {
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
-        if (status === 401 && !envAccessToken && connection?.refreshToken) {
-          const refreshedToken = await this.refreshMarketplaceAccessToken(
-            connection,
+        if (status === 401) {
+          if (connection.refreshToken) {
+            const refreshedToken = await this.refreshMarketplaceAccessToken(
+              connection,
+              baseUrl,
+            );
+            return this.requestMarketplaceShip(
+              endpoint,
+              order.orderSn,
+              channelId,
+              refreshedToken,
+            );
+          }
+
+          const bootstrapped = await this.bootstrapMarketplaceConnection(
             baseUrl,
+            {
+              shopId: order.shopId,
+              marketplace: order.marketplace,
+            },
           );
+          const bootstrappedAccessToken =
+            bootstrapped.accessToken?.trim() ?? '';
+          if (!bootstrappedAccessToken) {
+            throw new InternalServerErrorException(
+              'Marketplace OAuth bootstrap did not return a usable access token',
+            );
+          }
           return this.requestMarketplaceShip(
             endpoint,
             order.orderSn,
             channelId,
-            refreshedToken,
+            bootstrappedAccessToken,
           );
         }
       }
@@ -672,15 +977,7 @@ export class OrdersService {
   }
 
   private async getMarketplaceAccessToken(
-    connection: Pick<
-      MarketplaceConnection,
-      | 'id'
-      | 'isActive'
-      | 'accessToken'
-      | 'refreshToken'
-      | 'accessTokenExpiresAt'
-      | 'refreshTokenExpiresAt'
-    >,
+    connection: MarketplaceTokenConnection,
     baseUrl: string,
   ) {
     if (!connection.isActive) {
@@ -711,13 +1008,21 @@ export class OrdersService {
       return this.refreshMarketplaceAccessToken(connection, baseUrl);
     }
 
-    if (currentAccessToken) {
-      return currentAccessToken;
+    this.logger.warn(
+      `No usable access/refresh token in DB for connection ${connection.id}. Running OAuth bootstrap.`,
+    );
+    const bootstrapped = await this.bootstrapMarketplaceConnection(baseUrl, {
+      shopId: connection.shopId,
+      marketplace: connection.marketplace,
+    });
+    const bootstrappedAccessToken = bootstrapped.accessToken?.trim() ?? '';
+    if (!bootstrappedAccessToken) {
+      throw new InternalServerErrorException(
+        'Marketplace OAuth bootstrap did not return a usable access token',
+      );
     }
 
-    throw new InternalServerErrorException(
-      'Marketplace access token is missing. Run marketplace OAuth connect flow first.',
-    );
+    return bootstrappedAccessToken;
   }
 
   private async refreshMarketplaceAccessToken(
@@ -731,23 +1036,12 @@ export class OrdersService {
       );
     }
 
-    const partnerId =
-      this.configService.get<string>('MARKETPLACE_PARTNER_ID') ??
-      this.configService.get<string>('MARKETPLACE_CLIENT_ID');
-    const partnerKey =
-      this.configService.get<string>('MARKETPLACE_PARTNER_KEY') ??
-      this.configService.get<string>('MARKETPLACE_CLIENT_SECRET');
-
-    if (!partnerId || !partnerKey) {
-      throw new InternalServerErrorException(
-        'MARKETPLACE_PARTNER_ID/MARKETPLACE_PARTNER_KEY (or MARKETPLACE_CLIENT_ID/SECRET) are required for token refresh',
-      );
-    }
+    const { partnerId, partnerKey } = this.getMarketplacePartnerCredentials();
 
     const apiPath = '/oauth/token';
     const timestamp = Math.floor(Date.now() / 1000);
     const base = `${partnerId}${apiPath}${timestamp}${refreshToken}`;
-    const sign = createHmac('sha256', partnerKey).update(base).digest('hex');
+    const sign = this.createMarketplaceSign(partnerKey, base);
     const endpoint = `${baseUrl}${apiPath}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&sign=${sign}`;
 
     try {
