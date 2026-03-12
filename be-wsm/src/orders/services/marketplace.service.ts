@@ -79,6 +79,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 @Injectable()
 export class MarketplaceService {
+  private readonly marketplaceRetryAttempts = 3;
+  private readonly marketplaceRetryBaseDelayMs = 300;
+  private readonly marketplaceRetryJitterMs = 200;
+
   // Injects DB access and config for marketplace integration.
   constructor(
     private readonly prisma: PrismaService,
@@ -88,13 +92,11 @@ export class MarketplaceService {
   // Fetches order list payload from marketplace using valid auth context.
   async fetchOrderList() {
     const baseUrl = this.getMarketplaceBaseUrl();
-    const endpoint = `${baseUrl}/order/list`;
 
     const { accessToken, connection } =
       await this.resolveMarketplaceAuthContext(baseUrl);
 
     const orders = await this.callMarketplaceOrderList(
-      endpoint,
       baseUrl,
       accessToken,
       connection,
@@ -109,13 +111,12 @@ export class MarketplaceService {
   // Fetches a single order detail payload from marketplace by order number.
   async fetchOrderDetail(orderSn: string) {
     const baseUrl = this.getMarketplaceBaseUrl();
-    const endpoint = `${baseUrl}/order/detail?order_sn=${encodeURIComponent(orderSn)}`;
 
     const { accessToken, connection } =
       await this.resolveMarketplaceAuthContext(baseUrl);
     const payload = await this.callMarketplaceOrderDetail(
-      endpoint,
       baseUrl,
+      orderSn,
       accessToken,
       connection,
     );
@@ -178,13 +179,17 @@ export class MarketplaceService {
 
   // Calls order list endpoint with retry flow on token expiration.
   private async callMarketplaceOrderList(
-    endpoint: string,
     baseUrl: string,
     accessToken: string,
     connection: MarketplaceTokenConnection,
   ) {
+    const endpoint = `${baseUrl}/order/list`;
     try {
-      return await this.requestMarketplaceOrderList(endpoint, accessToken);
+      return await this.requestMarketplaceOrderList(
+        baseUrl,
+        accessToken,
+        connection.shopId,
+      );
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
@@ -194,7 +199,11 @@ export class MarketplaceService {
               connection,
               baseUrl,
             );
-            return this.requestMarketplaceOrderList(endpoint, refreshedToken);
+            return this.requestMarketplaceOrderList(
+              baseUrl,
+              refreshedToken,
+              connection.shopId,
+            );
           }
 
           const bootstrapped = await this.bootstrapMarketplaceConnection(
@@ -212,8 +221,9 @@ export class MarketplaceService {
             );
           }
           return this.requestMarketplaceOrderList(
-            endpoint,
+            baseUrl,
             bootstrappedAccessToken,
+            bootstrapped.shopId,
           );
         }
       }
@@ -224,13 +234,19 @@ export class MarketplaceService {
 
   // Calls order detail endpoint with retry flow on token expiration.
   private async callMarketplaceOrderDetail(
-    endpoint: string,
     baseUrl: string,
+    orderSn: string,
     accessToken: string,
     connection: MarketplaceTokenConnection,
   ) {
+    const endpoint = `${baseUrl}/order/detail`;
     try {
-      return await this.requestMarketplaceOrderDetail(endpoint, accessToken);
+      return await this.requestMarketplaceOrderDetail(
+        baseUrl,
+        orderSn,
+        accessToken,
+        connection.shopId,
+      );
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
@@ -240,7 +256,12 @@ export class MarketplaceService {
               connection,
               baseUrl,
             );
-            return this.requestMarketplaceOrderDetail(endpoint, refreshedToken);
+            return this.requestMarketplaceOrderDetail(
+              baseUrl,
+              orderSn,
+              refreshedToken,
+              connection.shopId,
+            );
           }
 
           const bootstrapped = await this.bootstrapMarketplaceConnection(
@@ -258,8 +279,10 @@ export class MarketplaceService {
             );
           }
           return this.requestMarketplaceOrderDetail(
-            endpoint,
+            baseUrl,
+            orderSn,
             bootstrappedAccessToken,
+            bootstrapped.shopId,
           );
         }
       }
@@ -270,15 +293,23 @@ export class MarketplaceService {
 
   // Performs raw HTTP request for marketplace order list and validates response shape.
   private async requestMarketplaceOrderList(
-    endpoint: string,
+    baseUrl: string,
     accessToken: string,
+    shopId: string,
   ): Promise<Record<string, unknown>[]> {
-    const response = await axios.get<MarketplaceOrderListApiResponse>(
-      endpoint,
+    const endpoint = this.buildSignedMarketplaceEndpoint(
+      baseUrl,
+      '/order/list',
       {
+        accessToken,
+        shopId,
+      },
+    );
+    const response = await this.requestMarketplaceWithRetry(() =>
+      axios.get<MarketplaceOrderListApiResponse>(endpoint, {
         headers: this.buildMarketplaceHeaders(accessToken),
         timeout: 10000,
-      },
+      }),
     );
 
     const responseData = response.data?.data;
@@ -300,15 +331,25 @@ export class MarketplaceService {
 
   // Performs raw HTTP request for marketplace order detail and validates response shape.
   private async requestMarketplaceOrderDetail(
-    endpoint: string,
+    baseUrl: string,
+    orderSn: string,
     accessToken: string,
+    shopId: string,
   ): Promise<Record<string, unknown>> {
-    const response = await axios.get<MarketplaceOrderDetailApiResponse>(
-      endpoint,
+    const endpoint = this.buildSignedMarketplaceEndpoint(
+      baseUrl,
+      '/order/detail',
       {
+        accessToken,
+        shopId,
+        query: { order_sn: orderSn },
+      },
+    );
+    const response = await this.requestMarketplaceWithRetry(() =>
+      axios.get<MarketplaceOrderDetailApiResponse>(endpoint, {
         headers: this.buildMarketplaceHeaders(accessToken),
         timeout: 10000,
-      },
+      }),
     );
 
     const payload = response.data?.data;
@@ -357,11 +398,12 @@ export class MarketplaceService {
     let authCode = '';
     let resolvedShopId = shopId;
     try {
-      const authorizeResponse =
-        await axios.get<MarketplaceAuthorizeApiResponse>(authorizeEndpoint, {
+      const authorizeResponse = await this.requestMarketplaceWithRetry(() =>
+        axios.get<MarketplaceAuthorizeApiResponse>(authorizeEndpoint, {
           headers: { Accept: 'application/json' },
           timeout: 10000,
-        });
+        }),
+      );
 
       authCode = authorizeResponse.data?.data?.code?.trim() ?? '';
       const responseShopId =
@@ -391,16 +433,18 @@ export class MarketplaceService {
 
     let tokenData: MarketplaceTokenApiResponse['data'] | undefined;
     try {
-      const tokenResponse = await axios.post<MarketplaceTokenApiResponse>(
-        tokenEndpoint,
-        {
-          grant_type: 'authorization_code',
-          code: authCode,
-        },
-        {
-          headers: { 'Content-Type': 'application/json' },
-          timeout: 10000,
-        },
+      const tokenResponse = await this.requestMarketplaceWithRetry(() =>
+        axios.post<MarketplaceTokenApiResponse>(
+          tokenEndpoint,
+          {
+            grant_type: 'authorization_code',
+            code: authCode,
+          },
+          {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 10000,
+          },
+        ),
       );
       tokenData = tokenResponse.data?.data;
     } catch (error) {
@@ -530,10 +574,11 @@ export class MarketplaceService {
     );
     try {
       return await this.requestMarketplaceShip(
-        endpoint,
+        baseUrl,
         order.orderSn,
         channelId,
         accessToken,
+        order.shopId,
       );
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -545,10 +590,11 @@ export class MarketplaceService {
               baseUrl,
             );
             return this.requestMarketplaceShip(
-              endpoint,
+              baseUrl,
               order.orderSn,
               channelId,
               refreshedToken,
+              order.shopId,
             );
           }
 
@@ -567,10 +613,11 @@ export class MarketplaceService {
             );
           }
           return this.requestMarketplaceShip(
-            endpoint,
+            baseUrl,
             order.orderSn,
             channelId,
             bootstrappedAccessToken,
+            order.shopId,
           );
         }
       }
@@ -581,21 +628,29 @@ export class MarketplaceService {
 
   // Performs raw HTTP request to ship an order and validates ship response body.
   private async requestMarketplaceShip(
-    endpoint: string,
+    baseUrl: string,
     orderSn: string,
     channelId: string,
     accessToken: string,
+    shopId: string,
   ): Promise<MarketplaceShipResult> {
-    const response = await axios.post<MarketplaceShipApiResponse>(
-      endpoint,
-      {
-        order_sn: orderSn,
-        channel_id: channelId,
-      },
-      {
-        headers: this.buildMarketplaceHeaders(accessToken),
-        timeout: 10000,
-      },
+    const endpoint = this.buildSignedMarketplaceEndpoint(
+      baseUrl,
+      '/logistic/ship',
+      { accessToken, shopId },
+    );
+    const response = await this.requestMarketplaceWithRetry(() =>
+      axios.post<MarketplaceShipApiResponse>(
+        endpoint,
+        {
+          order_sn: orderSn,
+          channel_id: channelId,
+        },
+        {
+          headers: this.buildMarketplaceHeaders(accessToken),
+          timeout: 10000,
+        },
+      ),
     );
 
     if (!response.data?.data) {
@@ -695,24 +750,26 @@ export class MarketplaceService {
     const endpoint = `${baseUrl}${apiPath}?partner_id=${encodeURIComponent(partnerId)}&timestamp=${timestamp}&sign=${sign}`;
 
     try {
-      const response = await axios.post<{
-        data?: {
-          access_token?: string;
-          refresh_token?: string;
-          expires_in?: number;
-          token_type?: string;
-          scope?: string;
-        };
-      }>(
-        endpoint,
-        {
-          grant_type: 'refresh_token',
-          refresh_token: refreshToken,
-        },
-        {
-          headers: { 'Content-Type': 'application/json' },
-          timeout: 10000,
-        },
+      const response = await this.requestMarketplaceWithRetry(() =>
+        axios.post<{
+          data?: {
+            access_token?: string;
+            refresh_token?: string;
+            expires_in?: number;
+            token_type?: string;
+            scope?: string;
+          };
+        }>(
+          endpoint,
+          {
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+          },
+          {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 10000,
+          },
+        ),
       );
 
       const tokenData = response.data?.data;
@@ -745,6 +802,121 @@ export class MarketplaceService {
     } catch (error) {
       throw this.toMarketplaceError(error, endpoint, 'token refresh');
     }
+  }
+
+  // Builds signed marketplace endpoint for protected resource calls.
+  private buildSignedMarketplaceEndpoint(
+    baseUrl: string,
+    apiPath: string,
+    options: {
+      accessToken: string;
+      shopId?: string;
+      query?: Record<string, string>;
+    },
+  ) {
+    const { partnerId, partnerKey } = this.getMarketplacePartnerCredentials();
+    const timestamp = Math.floor(Date.now() / 1000);
+    const base =
+      `${partnerId}${apiPath}${timestamp}${options.accessToken}` +
+      (options.shopId ?? '');
+    const sign = this.createMarketplaceSign(partnerKey, base);
+
+    const url = new URL(`${baseUrl}${apiPath}`);
+    url.searchParams.set('partner_id', partnerId);
+    url.searchParams.set('timestamp', String(timestamp));
+    url.searchParams.set('sign', sign);
+
+    if (options.query) {
+      for (const [key, value] of Object.entries(options.query)) {
+        if (value.trim()) {
+          url.searchParams.set(key, value);
+        }
+      }
+    }
+
+    return url.toString();
+  }
+
+  // Retries marketplace requests on rate limit and transient server errors.
+  private async requestMarketplaceWithRetry<T>(request: () => Promise<T>) {
+    let attempt = 1;
+
+    while (true) {
+      try {
+        return await request();
+      } catch (error) {
+        if (!this.shouldRetryMarketplaceRequest(error, attempt)) {
+          throw error;
+        }
+
+        const delayMs = this.getMarketplaceRetryDelayMs(error, attempt);
+        await this.sleep(delayMs);
+        attempt += 1;
+      }
+    }
+  }
+
+  private shouldRetryMarketplaceRequest(error: unknown, attempt: number) {
+    if (attempt >= this.marketplaceRetryAttempts) {
+      return false;
+    }
+
+    if (!axios.isAxiosError(error)) {
+      return false;
+    }
+
+    const status = error.response?.status;
+    if (status === undefined) {
+      return true;
+    }
+
+    if (status === 429) {
+      return true;
+    }
+
+    return status >= 500 && status < 600;
+  }
+
+  private getMarketplaceRetryDelayMs(error: unknown, attempt: number) {
+    const retryAfterDelay = this.getRetryAfterDelayMs(error);
+    if (retryAfterDelay !== null) {
+      return retryAfterDelay;
+    }
+
+    const exponentialDelay =
+      this.marketplaceRetryBaseDelayMs * 2 ** (attempt - 1);
+    const jitter = Math.floor(Math.random() * this.marketplaceRetryJitterMs);
+    return exponentialDelay + jitter;
+  }
+
+  private getRetryAfterDelayMs(error: unknown) {
+    if (!axios.isAxiosError(error) || !error.response) {
+      return null;
+    }
+
+    const rawRetryAfter = error.response.headers?.['retry-after'];
+    const retryAfter = Array.isArray(rawRetryAfter)
+      ? rawRetryAfter[0]
+      : rawRetryAfter;
+    if (typeof retryAfter !== 'string') {
+      return null;
+    }
+
+    const retryAfterSeconds = Number(retryAfter);
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
+      return retryAfterSeconds * 1000;
+    }
+
+    const retryAfterDate = Date.parse(retryAfter);
+    if (Number.isNaN(retryAfterDate)) {
+      return null;
+    }
+
+    return Math.max(0, retryAfterDate - Date.now());
+  }
+
+  private async sleep(ms: number) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   // Normalizes axios errors into gateway-friendly HTTP exceptions.
