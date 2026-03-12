@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Toaster } from "@/components/ui/sonner";
+import { useAuthStore } from "@/stores/auth-store";
 
 const poppins = Poppins({
   subsets: ["latin"],
@@ -90,6 +91,7 @@ function resolveApiMessage(payload: LoginResponse | null, fallback: string) {
 
 export default function LoginForm() {
   const router = useRouter();
+  const setStoreEmail = useAuthStore((state) => state.setEmail);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(false);
@@ -141,6 +143,11 @@ export default function LoginForm() {
 
       if (!response.ok) {
         throw new Error(resolveApiMessage(payload, "Invalid email or password."));
+      }
+
+      const signedInEmail = payload?.user?.email?.trim() || email.trim();
+      if (signedInEmail) {
+        setStoreEmail(signedInEmail);
       }
 
       toast.success("Signed in successfully.", getToastTarget());
