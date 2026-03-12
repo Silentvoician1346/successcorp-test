@@ -32,7 +32,7 @@ export default function HeaderEmail() {
   }
 
   return (
-    <p className="max-w-[220px] truncate text-sm font-semibold text-white" title={email ?? undefined}>
+    <p className="max-w-55 truncate text-sm font-semibold text-white" title={email ?? undefined}>
       {email ?? ""}
     </p>
   );
